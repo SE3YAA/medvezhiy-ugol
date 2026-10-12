@@ -741,7 +741,7 @@ V.m_network = () => subhead('Сеть объектов', 'У каждого об
   return `<section class="card ${cur ? 'inv' : ''}"><div class="card-h"><div><span class="h2">${esc(p.name)}</span><br><span class="small muted">${esc(p.place)}</span></div>${cur ? '<span class="chip plain">Открыт</span>' : `<button class="btn sm" onclick="switchProperty('${p.id}')">Перейти</button>`}</div>
     <div class="stats"><div class="stat"><b>${occ} из ${houses.length}</b><span>занято сегодня</span></div><div class="stat"><b>${d.units.length}</b><span>объектов</span></div><div class="stat"><b>${money(rev)}</b><span>за 30 дней</span></div></div></section>`;
 }).join('') + '<p class="small muted" style="padding:0 4px">Новый объект сети добавляется в catalog.js, раздел properties. На сервере у каждого франчайзи будет свой вход и доступ только к своим данным.</p>';
-function switchProperty(pid) { DB.useProperty(pid); const u = DB.user('admin'); DB.setSession('admin'); S.user = u; DB.tick(); go('today'); toast('Открыт объект «' + CAT.properties.find(p => p.id === pid).name + '»'); }
+async function switchProperty(pid) { await DB.useProperty(pid); const u = DB.user('admin'); DB.setSession('admin'); S.user = u; DB.tick(); go('today'); toast('Открыт объект «' + CAT.properties.find(p => p.id === pid).name + '»'); }
 
 // --- Настройки ---
 V.m_settings = () => {
@@ -751,8 +751,12 @@ V.m_settings = () => {
   <section class="card"><p class="small muted">Распечатайте код и поставьте на стол в доме или беседке. Гость наводит камеру и сразу попадает в консьерж, без установки и регистрации.</p>
     <div class="opts">${DB.d.units.map(x => `<button class="opt" onclick="qrSheet('${x.id}')">${esc(x.short)}</button>`).join('')}</div></section>
   <section class="card"><span class="h2">QR на воротах для персонала</span><p class="small muted">Сотрудник сканирует код, когда приходит на смену, и приход отмечается сам.</p><button class="btn sm ghost" onclick="qrSheet('checkin')">${ic('qr', 'sm')} Показать код</button></section>
+  <div class="sec"><span class="h2">Общая база</span></div>
+  <section class="card"><div class="card-h"><span class="h2">${!window.SYNC || !SYNC.enabled ? 'Только этот телефон' : SYNC.online ? 'Подключена' : 'Нет связи'}</span><span class="chip ${window.SYNC && SYNC.enabled ? (SYNC.online ? 'ok' : 'bad') : ''}">${window.SYNC && SYNC.enabled ? (SYNC.online ? 'онлайн' : 'офлайн') : 'выключена'}</span></div>
+    <span class="small muted">${!window.SYNC || !SYNC.enabled ? 'Данные хранятся только в памяти этого телефона. Адрес сервера задаётся в config.js.' : SYNC.online ? `Все телефоны видят одни и те же данные. Последняя сверка с сервером: ${T.stamp(SYNC.lastOk)}.` : `Изменения сохраняются в телефоне и уйдут на сервер, когда появится связь.${SYNC.error ? ' Ошибка: ' + esc(SYNC.error) : ''}`}</span>
+    ${window.SYNC && SYNC.enabled ? `<button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button>` : ''}</section>
   <div class="sec"><span class="h2">Подключения</span></div>
-  <section class="card flat"><div class="list">${[['Сервер и общая база', 'Схема готова: supabase/schema.sql'], ['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
+  <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
   <div class="btns"><button class="btn ghost" onclick="exportCSV()">${ic('download', 'sm')} Отчёт CSV</button><button class="btn ghost" onclick="resetDemo()">Сбросить демо</button></div>`;
 };

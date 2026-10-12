@@ -162,7 +162,7 @@ function ask(title, text, okLabel, fn, danger) {
     <div class="btns"><button class="btn ghost" onclick="closeAsk()">Назад</button><button class="btn ${danger ? 'danger' : ''}" onclick="askOk()">${esc(okLabel)}</button></div></div>`;
   el.hidden = false;
 }
-function closeAsk() { $('#ask').hidden = true; $('#ask').innerHTML = ''; askFn = null; }
+function closeAsk() { $('#ask').hidden = true; $('#ask').innerHTML = ''; askFn = null; if (S.dirtyRemote && $('#sheet').hidden) { S.dirtyRemote = false; render(); } }
 function askOk() { const f = askFn; closeAsk(); if (f) f(); }
 function viewer(html, caption) {
   const el = $('#ask');
@@ -176,7 +176,7 @@ function sheet(html) {
   el.classList.toggle('in', was); el.hidden = false; document.body.classList.add('lock');
   if (!was) $('.sheet', el).scrollTop = y;
 }
-function closeSheet() { const el = $('#sheet'); el.hidden = true; el.innerHTML = ''; document.body.classList.remove('lock'); S.how = null; }
+function closeSheet() { const el = $('#sheet'); el.hidden = true; el.innerHTML = ''; document.body.classList.remove('lock'); S.how = null; if (S.dirtyRemote) { S.dirtyRemote = false; render(); } }
 const sheetHead = (title, sub = '') => `<div class="sheet-h"><div><h2>${title}</h2>${sub ? `<p>${sub}</p>` : ''}</div><button class="iconbtn" aria-label="Закрыть" onclick="closeSheet()">${ic('x')}</button></div>`;
 const field = (label, control) => `<label class="field"><span>${label}</span>${control}</label>`;
 const options = (list, cur) => list.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`; }).join('');
@@ -456,13 +456,14 @@ function introGo(n, auto) {
   if (k >= INTRO.length) return auto ? null : introDone(); // на последнем слайде ждём нажатия
   renderIntro(k);
 }
-function introDone() { DB.prefSet('intro', '1'); loader(() => renderAuth()); }
+function introDone() { DB.prefSet('intro', '1'); loader(route); }
 
 // Загрузка: пока идёт анимация, заранее готовим шрифты, рисунки домов и фотографии,
 // чтобы дальше экраны открывались без подгрузок
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const preloadImg = src => new Promise(r => { const im = new Image(); im.onload = im.onerror = r; im.src = src; });
 const LOAD = [
+  ['Общая база', () => window.SYNC && SYNC.enabled ? (SYNC.ready || SYNC.start()) : null],
   ['Шрифты', () => document.fonts && document.fonts.load ? Promise.race([Promise.all(['600 16px Onest', '400 16px Onest', '500 16px Unbounded'].map(f => document.fonts.load(f, 'Медвежий угол 123 ₽'))), wait(2500)]) : null],
   ['Дома и лес', () => { DB.d.units.forEach(u => { unitScene(u); if (u.kind === 'house') { const sd = u.id.charCodeAt(1); scene(u.scene, sd, '', 'aframe'); scene(u.scene, sd, '', 'barn'); scene(u.scene, sd + 2, '', 'creek'); } }); scene('base', 3); scene('quad', 5); }],
   ['Фотографии', () => Promise.race([Promise.all([].concat(DB.d.units.map(u => u.photo), ...Object.values(CAT.houses).map(h => h.photos || []), Object.values(DB.d.refs || {})).filter(Boolean).map(preloadImg)), wait(4000)])],
@@ -477,9 +478,10 @@ async function loader(next) {
   for (let i = 0; i < LOAD.length; i++) {
     const bar = $('#ld-bar'); if (!bar) return; // пользователь уже ушёл с экрана
     $('#ld-txt').textContent = LOAD[i][0]; bar.style.width = (i + 1) / LOAD.length * 100 + '%';
-    try { await Promise.all([LOAD[i][1](), wait(S.warm ? 260 : 420)]); } catch (e) { /* не получилось подгрузить заранее — подгрузится позже */ }
+    try { await Promise.all([Promise.race([LOAD[i][1](), wait(15000)]), wait(S.warm ? 260 : 420)]); } catch (e) { /* не получилось подгрузить заранее — подгрузится позже */ }
   }
   S.warm = true;
+  if (window.SYNC && SYNC.enabled && !SYNC.online && !S.offlineWarned) { S.offlineWarned = true; setTimeout(() => toast('Нет связи с сервером. Работаем на данных телефона, изменения отправятся позже'), 400); }
   const el = $('.load'); if (!el) return;
   el.classList.add('out'); await wait(320);
   next();
@@ -493,8 +495,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('#a
 // Приложение ставится на телефон как обычное (PWA) и открывается без интернета
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-document.addEventListener('DOMContentLoaded', function boot() {
-  DB.load(); applyTheme();
+// Куда вести после загрузки: QR со стола, приглашение в компанию, ссылка друга, отметка смены
+function route() {
   const h = location.hash;
   let user = DB.me();
   const qr = /^#qr-([a-z0-9]+)$/i.exec(h);          // QR на столе в доме или беседке: …#qr-h1
@@ -502,10 +504,21 @@ document.addEventListener('DOMContentLoaded', function boot() {
   const ref = /^#ref-([A-Z0-9]+)$/i.exec(h);        // ссылка друга со скидкой: …#ref-KOSTYA
   if (qr) user = DB.qrLogin(qr[1]) || user;
   if (join && !user) user = DB.joinGroup(join[1].toUpperCase());
-  if (ref && !user) { S.ref = ref[1].toUpperCase(); DB.prefSet('intro', '1'); return loader(() => renderAuth('reg')); }
+  if (ref && !user) { S.ref = ref[1].toUpperCase(); DB.prefSet('intro', '1'); return renderAuth('reg'); }
   // QR на воротах для персонала: …#checkin отмечает приход на смену
   if (h === '#checkin' && user && user.role !== 'guest' && !DB.onShift(user.login)) { DB.checkIn(user.login); S.flash = 'Приход на смену отмечен'; }
-  if (user) loader(() => { launch(user); if (S.flash) toast(S.flash); });
-  else if (!DB.prefGet('intro')) renderIntro(0);
-  else loader(() => renderAuth());
+  if (user) { launch(user); if (S.flash) toast(S.flash); } else renderAuth();
+}
+
+// Данные с сервера изменились: обновляем экран, но не мешаем, если открыта форма
+function onRemoteChange() {
+  if (!S.user) return;
+  if ($('#sheet').hidden && $('#ask').hidden) render(); else S.dirtyRemote = true;
+}
+
+document.addEventListener('DOMContentLoaded', function boot() {
+  DB.load(); applyTheme();
+  if (window.SYNC) { SYNC.onRemote = onRemoteChange; if (SYNC.enabled) SYNC.start(); }
+  if (!DB.prefGet('intro') && !location.hash) renderIntro(0);   // первый запуск: приветствие, база грузится в фоне
+  else loader(route);
 });

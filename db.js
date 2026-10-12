@@ -271,19 +271,29 @@
       return this.d;
     },
     save() {
+      const ok = this.saveLocal();
+      if (window.SYNC) window.SYNC.schedule(); // отправить изменения на сервер (sync.js)
+      return ok;
+    },
+    saveLocal() {
       const ok = store.set(this.key(), JSON.stringify(this.d));
       if (!ok && this.onFail) this.onFail();
       return ok;
     },
     reset() { CAT.properties.forEach(p => store.del(VER + p.id)); store.del(SESSION_KEY); store.del('mu_pid'); this.load(); },
-    useProperty(pid) { store.set('mu_pid', pid); this.load(); },
+    useProperty(pid) { store.set('mu_pid', pid); this.load(); if (window.SYNC && window.SYNC.enabled) return window.SYNC.restart(); },
     peek(pid) { // данные другого объекта сети, только для сводки владельца
       if (pid === this.pid()) return this.d;
       const raw = store.get(VER + pid);
       if (raw) { try { return JSON.parse(raw); } catch (e) { /* испорчено, пересоздадим */ } }
       const d = seed(pid); store.set(VER + pid, JSON.stringify(d)); return d;
     },
-    id() { return ++this.d.seq; },
+    // Номер записи уникален между телефонами: время в миллисекундах × 1000 плюс счётчик
+    id() {
+      const n = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+      this._last = Math.max(n, (this._last || 0) + 1);
+      return this._last;
+    },
     get S() { return this.d.settings; },
 
     // --- Уведомления. to: логин, роль ('admin', 'staff', 'instructor') или 'all' ---
@@ -534,7 +544,7 @@
     // --- Касса и общий счёт гостя ---
     addTx(x, silent) {
       const n = Object.assign({ id: this.id(), ts: Date.now(), cat: 'other', method: 'Наличные', bookingId: null }, x);
-      if (n.type === 'in' && n.paid !== false) n.receipt = this.d.seq;
+      if (n.type === 'in' && n.paid !== false) n.receipt = n.id % 1000000;
       this.d.tx.unshift(n);
       if (!silent) this.save();
       return n;
@@ -543,7 +553,7 @@
     deleteTx(id) { this.d.tx = this.d.tx.filter(t => t.id !== id); this.save(); },
     folio(stayId) { return this.d.tx.filter(x => x.folio === stayId && x.paid === false); },
     settleFolio(stayId, method) {
-      this.folio(stayId).forEach(x => { x.paid = true; x.method = method; x.receipt = this.id(); });
+      this.folio(stayId).forEach(x => { x.paid = true; x.method = method; x.receipt = this.id() % 1000000; });
       this.save();
     },
 

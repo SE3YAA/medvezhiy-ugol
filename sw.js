@@ -1,7 +1,7 @@
 // sw.js — офлайн-режим: приложение открывается в лесу даже без связи.
 // При изменении файлов увеличьте номер версии, чтобы телефоны подтянули обновление.
-const VERSION = 'mu-v11';
-const FILES = ['./', 'index.html', 'style.css', 'catalog.js', 'db.js', 'app.js', 'admin.js', 'staff.js', 'guest.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
+const VERSION = 'mu-v13';
+const FILES = ['./', 'index.html', 'style.css', 'config.js', 'catalog.js', 'db.js', 'sync.js', 'app.js', 'admin.js', 'staff.js', 'guest.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
@@ -11,7 +11,7 @@ self.addEventListener('activate', e => {
 });
 // Сначала сеть, при её отсутствии — сохранённая копия
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return; // запросы к серверу базы не кешируем
   e.respondWith(
     fetch(e.request).then(res => {
       if (res.ok && new URL(e.request.url).origin === location.origin) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(e.request, copy)); }
