@@ -339,7 +339,7 @@ function certBuySheet() {
 function buyCert() {
   const a = Number(val('gc-a')), to = val('gc-t'); if (!(a >= 1000)) return toast('Минимум 1 000 ₽');
   needContact(() => paySheet({ title: 'Подарочный сертификат', amount: a, allowBonus: false, onPaid: () => {
-    const c = DB.buyCert(a, S.user.name, to);
+    const c = DB.buyCert(a, S.user.name, to, S.user.login);
     sheet(sheetHead('Сертификат готов', money(a)) + `<div class="certcard"><span>Медвежий угол</span><b>${money(a)}</b><span class="num" style="user-select:all">${c.code}</span><small>${esc(to || 'Подарок')}</small></div>
       <button class="btn block" onclick="copyText('${c.code}','Код скопирован')">${ic('copy', 'sm')} Скопировать код</button><p class="small muted" style="text-align:center">Получатель вводит код при оплате в приложении.</p>`);
   } }));
@@ -448,5 +448,6 @@ V.g_me = () => {
     <button class="li" onclick="certBuySheet()"><span class="li-ic">${ic('gift')}</span><span class="li-main"><span class="li-t">Подарить сертификат</span><br><span class="li-s">На дом, баню и любые услуги</span></span>${ic('right', 'sm')}</button>
   </div></section>
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
+  ${SRV() && !S.user.visitor && !S.user.qr && !S.user.groupOf ? `<button class="btn block ghost" onclick="passSheet()">${ic('lock', 'sm')} Сменить пароль</button>` : ''}
   <button class="btn block line" onclick="logout()">${ic('logout', 'sm')} Выйти</button>`;
 };

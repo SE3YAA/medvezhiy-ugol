@@ -1,18 +1,26 @@
-// sync.js — общая база: все телефоны видят одни и те же брони, задачи, кассу и фото.
+// sync.js — общая база и вход по паролю.
 //
-// Как это устроено. Приложение по-прежнему работает с DB.d в памяти, поэтому экраны открываются мгновенно
+// Как это устроено. Приложение работает с DB.d в памяти телефона, поэтому экраны открываются мгновенно
 // и не зависят от связи в лесу. Этот файл в фоне:
-//   1) при запуске забирает с сервера все записи объекта и собирает из них DB.d;
-//   2) после каждого DB.save() находит изменённые записи и отправляет только их;
-//   3) каждые несколько секунд забирает с сервера то, что поменяли другие, и обновляет экран.
-// Если связи нет, всё копится в телефоне и уйдёт на сервер, когда сеть появится.
-// Сервер — таблица records в Supabase (см. sync.sql), запросы идут напрямую в её REST API.
+//   1) при входе получает ключ сессии и забирает с сервера то, что этому человеку можно видеть;
+//   2) после каждого DB.save() отправляет только изменённые записи;
+//   3) каждые несколько секунд забирает то, что поменяли другие, и обновляет экран.
+// Сервер сам проверяет права (см. auth.sql): если записать нельзя, он присылает, как запись выглядит у него,
+// и телефон возвращает её назад. Без связи всё копится в телефоне и уходит, когда сеть появится.
 (function () {
   const C = window.MU_CONFIG || {};
   const enabled = !!(C.supabaseUrl && C.supabaseKey);
-  const API = enabled ? C.supabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '') + '/rest/v1/records' : '';
+  const BASE = enabled ? C.supabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '') + '/rest/v1/rpc/' : '';
   const HEADERS = { apikey: C.supabaseKey, 'Content-Type': 'application/json' };
   if (C.supabaseKey && /^eyJ/.test(C.supabaseKey)) HEADERS.Authorization = 'Bearer ' + C.supabaseKey; // старый формат ключа anon
+
+  const ls = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* память переполнена: состояние восстановится полной загрузкой */ } },
+    del(k) { try { localStorage.removeItem(k); } catch (e) { /* нет доступа */ } },
+    keys() { try { return Object.keys(localStorage); } catch (e) { return []; } }
+  };
+  const SESSION = 'mu_auth_v1', STATE = 'mu_sync_v1_';
 
   // ---------- Как разложить DB.d на отдельные записи ----------
   const SKIP = ['seq', 'pid', 'created'];                 // у каждого телефона свои
@@ -22,7 +30,6 @@
     shifts: x => x.date + '|' + x.login, checkins: x => x.login + '|' + x.date + '|' + x.in
   };
   const keyOf = (coll, x) => String((KEY[coll] || (y => y.id != null ? y.id : JSON.stringify(y)))(x));
-  // Разделы, где свежие записи идут первыми (касса, задачи, уведомления…)
   const NEWEST = ['tx', 'notes', 'tasks', 'accepts', 'tickets', 'lost', 'leads', 'incidents', 'sos', 'reviews', 'waitlist', 'passes', 'certs', 'moods', 'checkins', 'fuel', 'rentals', 'promos'];
   const stamp = x => x.ts || x.in || (typeof x.id === 'number' ? x.id : 0);
   const KIND = { house: 0, gazebo: 1, sauna: 2 };
@@ -45,8 +52,7 @@
     else if (arr.every(x => typeof x.id === 'number')) arr.sort((a, b) => a.id - b.id);
     return arr;
   }
-  // Применить одну запись к DB.d (value === undefined — удалить)
-  function put(d, coll, rid, value) {
+  function put(d, coll, rid, value) {   // value === undefined — удалить
     if (coll === '$') { if (value === undefined) delete d[rid]; else d[rid] = value; return; }
     if (MAPS.includes(coll)) { d[coll] = d[coll] || {}; if (value === undefined) delete d[coll][rid]; else d[coll][rid] = value; return; }
     const arr = d[coll] = Array.isArray(d[coll]) ? d[coll] : [];
@@ -54,131 +60,224 @@
     if (value === undefined) { if (i >= 0) arr.splice(i, 1); return; }
     if (i >= 0) arr[i] = value; else if (NEWEST.includes(coll)) arr.unshift(value); else arr.push(value);
   }
+  // Отпечаток записи. Порядок полей не важен: сервер хранит их в своём порядке
+  const canon = v => Array.isArray(v) ? '[' + v.map(canon).join(',') + ']'
+    : v && typeof v === 'object' ? '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}'
+    : JSON.stringify(v === undefined ? null : v);
+  const fp = v => {
+    const s = canon(v); let a = 0x811c9dc5, b = 5381;
+    for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); a = Math.imul(a ^ c, 16777619); b = (Math.imul(b, 33) + c) | 0; }
+    return (a >>> 0).toString(36) + (b >>> 0).toString(36) + s.length.toString(36);
+  };
 
   // ---------- Сеть ----------
-  async function req(url, opt = {}, ms = 12000) {
+  async function rpc(fn, args, ms = 20000) {
     const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
     try {
-      const r = await fetch(url, Object.assign({ headers: Object.assign({}, HEADERS, opt.headers || {}), signal: ctl.signal }, opt.body ? { method: opt.method || 'POST', body: opt.body } : {}));
-      if (!r.ok) { const txt = await r.text().catch(() => ''); throw new Error(r.status + ' ' + txt.slice(0, 200)); }
-      return r.status === 204 ? null : r.json().catch(() => null);
+      const r = await fetch(BASE + fn, { method: 'POST', headers: HEADERS, body: JSON.stringify(args), signal: ctl.signal });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        const e = new Error(j.hint || j.message || 'Ошибка сервера ' + r.status);
+        e.session = r.status === 401 || j.code === '28000';
+        e.denied = r.status === 403 || j.code === '42501';
+        throw e;
+      }
+      return r.json();
     } finally { clearTimeout(t); }
-  }
-  async function fetchRows(since) {
-    const rows = [];
-    for (let off = 0; ; off += 1000) {
-      let url = `${API}?property=eq.${encodeURIComponent(SYNC.property)}&select=coll,rid,data,deleted,updated_at&order=updated_at.asc&limit=1000&offset=${off}`;
-      if (since) url += `&updated_at=gt.${encodeURIComponent(since)}`;
-      const part = await req(url);
-      rows.push(...(part || []));
-      if (!part || part.length < 1000) break;
-    }
-    return rows;
-  }
-  async function upsert(rows) {
-    for (let i = 0; i < rows.length; i += 100) {
-      await req(`${API}?on_conflict=property,coll,rid`, { body: JSON.stringify(rows.slice(i, i + 100)), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } }, 30000);
-    }
   }
 
   // ---------- Синхронизация ----------
   const SYNC = {
-    enabled, online: false, property: 'mu', snap: {}, cursor: null, lastOk: 0, error: '',
-    ready: null, busy: false, timer: null, pushTimer: null, onRemote: null,
+    enabled, online: false, property: 'mu', snap: {}, cursor: null, loaded: false, lastOk: 0, error: '',
+    ready: null, busy: false, timer: null, pushTimer: null,
+    onRemote: null, onSession: null, onDenied: null,
+    auth: (() => { try { return JSON.parse(ls.get(SESSION)) || null; } catch (e) { return null; } })(),
 
-    // Первый запуск: забрать всё с сервера. Если сервер пустой, этот телефон заливает на него стартовые данные
-    async start() {
-      if (!enabled) { this.ready = Promise.resolve(false); return this.ready; }
+    get signedIn() { return !!(this.auth && this.auth.token); },
+    get role() { return this.auth ? this.auth.role : null; },
+
+    // --- Состояние сверки хранится рядом с данными, чтобы после перезапуска не качать всё заново ---
+    saveState() { ls.set(STATE + this.property, JSON.stringify({ login: this.auth && this.auth.login, cursor: this.cursor, snap: this.snap })); },
+    loadState() {
+      try {
+        const st = JSON.parse(ls.get(STATE + this.property));
+        if (st && this.auth && st.login === this.auth.login && st.cursor) { this.snap = st.snap || {}; this.cursor = st.cursor; this.loaded = true; }
+      } catch (e) { /* испорчено — загрузим заново */ }
+    },
+
+    start() {
+      if (!enabled || !this.signedIn) { this.ready = Promise.resolve(false); return this.ready; }
       this.property = DB.pid();
+      clearTimeout(this.timer);
       this.ready = (async () => {
-        try {
-          const rows = await fetchRows(null);
-          const live = rows.filter(r => !r.deleted);
-          // Метка «стартовые данные залиты целиком» уходит последней. Нет метки — заливка прервалась, доливаем
-          const seeded = live.some(r => r.coll === '$' && r.rid === 'seeded');
-          if (!seeded) {
-            this.snap = {};
-            rows.forEach(r => this.track(r));
-            DB.d.seeded = true;
-            await this.push();
-            DB.saveLocal();
-          } else {
-            const d = { pid: DB.d.pid, seq: DB.d.seq, created: DB.d.created };
-            Object.keys(DB.d).forEach(k => { if (!SKIP.includes(k)) d[k] = Array.isArray(DB.d[k]) ? [] : MAPS.includes(k) ? {} : DB.d[k]; });
-            this.snap = {};
-            rows.forEach(r => { this.track(r); if (!r.deleted) put(d, r.coll, r.rid, r.data); });
-            Object.keys(d).forEach(k => { if (Array.isArray(d[k])) sortColl(k, d[k]); });
-            DB.d = d; DB.saveLocal();
-          }
-          this.online = true; this.lastOk = Date.now(); this.error = '';
-        } catch (e) { this.online = false; this.error = String(e.message || e); }
+        if (!this.loaded) this.loadState();
+        if (this.loaded) await this.cycle(true); else await this.fullLoad();
         this.loop();
         return this.online;
       })();
       return this.ready;
     },
-    restart() { clearTimeout(this.timer); this.snap = {}; this.cursor = null; return this.start(); },
+    restart() { clearTimeout(this.timer); this.loaded = false; this.snap = {}; this.cursor = null; return this.start(); },
+
+    async fetchAll(since) {
+      const rows = [];
+      for (let off = 0; ; off += 500) {
+        const part = await rpc('mu_pull', { p_token: this.auth.token, p_property: this.property, p_since: since, p_limit: 500, p_offset: off }, 30000);
+        rows.push(...(part || []));
+        if (!part || part.length < 500) break;
+      }
+      return rows;
+    },
+    // Первая загрузка: собрать DB.d из того, что сервер разрешает видеть. Пустой сервер заполняет только управляющий
+    async fullLoad() {
+      try {
+        const rows = await this.fetchAll(null);
+        const seeded = rows.some(r => !r.deleted && r.coll === '$' && r.rid === 'seeded');
+        this.snap = {}; this.cursor = null;
+        if (!seeded && this.role === 'admin') {
+          rows.forEach(r => { this.track(r); if (!r.deleted) put(DB.d, r.coll, r.rid, r.data); });
+          DB.d.seeded = true;
+          this.loaded = true;
+          await this.push();
+        } else {
+          const d = { pid: DB.d.pid, seq: DB.d.seq, created: DB.d.created };
+          Object.keys(DB.d).forEach(k => { if (!SKIP.includes(k)) d[k] = Array.isArray(DB.d[k]) ? [] : MAPS.includes(k) ? {} : undefined; });
+          Object.keys(d).forEach(k => { if (d[k] === undefined) delete d[k]; });
+          rows.forEach(r => { this.track(r); if (!r.deleted) put(d, r.coll, r.rid, r.data); });
+          Object.keys(d).forEach(k => { if (Array.isArray(d[k])) sortColl(k, d[k]); });
+          if (!d.settings) d.settings = DB.d.settings;   // настройки нужны экранам даже до первой записи
+          DB.d = d;
+          this.loaded = true;
+        }
+        DB.saveLocal(); this.saveState();
+        this.ok();
+      } catch (e) { this.fail(e); }
+    },
     track(r) {
       if (!this.cursor || r.updated_at > this.cursor) this.cursor = r.updated_at;
       const key = r.coll + '|' + r.rid;
-      if (r.deleted) delete this.snap[key]; else this.snap[key] = JSON.stringify(r.data);
+      if (r.deleted) delete this.snap[key]; else this.snap[key] = fp(r.data);
     },
 
     // После каждого сохранения: через полсекунды отправить изменения
     schedule() {
-      if (!enabled || !this.ready) return;
+      if (!enabled || !this.signedIn || !this.loaded) return;
       clearTimeout(this.pushTimer);
       this.pushTimer = setTimeout(() => this.cycle(false), 600);
     },
     async push() {
-      const cur = explode(DB.d), rows = [], done = [];
+      if (!this.loaded) return 0;
+      const cur = explode(DB.d), rows = [];
       Object.keys(cur).forEach(k => {
-        const j = JSON.stringify(cur[k]);
-        if (this.snap[k] !== j) { const [coll, rid] = split(k); rows.push({ property: this.property, coll, rid, data: cur[k], deleted: false }); done.push([k, j]); }
+        const h = fp(cur[k]);
+        if (this.snap[k] !== h) { const [coll, rid] = split(k); rows.push({ row: { coll, rid, data: cur[k], deleted: false }, k, h }); }
       });
       Object.keys(this.snap).forEach(k => {
-        if (!(k in cur)) { const [coll, rid] = split(k); rows.push({ property: this.property, coll, rid, data: null, deleted: true }); done.push([k, null]); }
+        if (!(k in cur)) { const [coll, rid] = split(k); rows.push({ row: { coll, rid, data: null, deleted: true }, k, h: null }); }
       });
       if (!rows.length) return 0;
-      rows.sort((a, b) => (a.coll === '$' && a.rid === 'seeded') - (b.coll === '$' && b.rid === 'seeded'));
-      await upsert(rows);
-      done.forEach(([k, j]) => { if (j === null) delete this.snap[k]; else this.snap[k] = j; });
+      const isSeed = x => x.row.coll === '$' && x.row.rid === 'seeded';
+      rows.sort((a, b) => isSeed(a) - isSeed(b));
+      let denied = 0;
+      for (let i = 0; i < rows.length; i += 100) {
+        const part = rows.slice(i, i + 100);
+        const res = await rpc('mu_push', { p_token: this.auth.token, p_property: this.property, p_rows: part.map(x => x.row) }, 30000);
+        part.forEach(x => { if (x.h === null) delete this.snap[x.k]; else this.snap[x.k] = x.h; });
+        // Сервер не разрешил: возвращаем запись к тому виду, что у него
+        (res && res.rejected || []).forEach(r => {
+          const k = r.coll + '|' + r.rid;
+          if (r.data == null) { put(DB.d, r.coll, r.rid, undefined); delete this.snap[k]; }
+          else { put(DB.d, r.coll, r.rid, r.data); this.snap[k] = fp(r.data); }
+          denied++;
+        });
+        this.saveState();
+      }
+      if (denied) { DB.saveLocal(); if (this.onRemote) this.onRemote(denied); if (this.onDenied) this.onDenied(denied); }
       return rows.length;
     },
-    // Забрать чужие изменения. Берём с запасом 15 секунд назад, повторы отсекаются сравнением
+    // Забрать чужие изменения. Берём с запасом 15 секунд назад, повторы отсекаются по отпечатку
     async pull() {
       const since = this.cursor ? new Date(new Date(this.cursor).getTime() - 15000).toISOString() : null;
-      const rows = await fetchRows(since);
+      const rows = await this.fetchAll(since);
+      if (!rows.length) return 0;
       const cur = explode(DB.d);
       let changed = 0;
       rows.forEach(r => {
-        const key = r.coll + '|' + r.rid, local = key in cur ? JSON.stringify(cur[key]) : undefined;
+        const key = r.coll + '|' + r.rid, local = key in cur ? fp(cur[key]) : undefined;
         if (local !== this.snap[key]) { if (!this.cursor || r.updated_at > this.cursor) this.cursor = r.updated_at; return; } // своё ещё не ушло — оно главнее
-        const j = r.deleted ? undefined : JSON.stringify(r.data);
-        if (j === local) { this.track(r); return; }
+        const h = r.deleted ? undefined : fp(r.data);
+        if (h === local) { this.track(r); return; }
         put(DB.d, r.coll, r.rid, r.deleted ? undefined : r.data);
         this.track(r); changed++;
       });
-      if (changed) { DB.saveLocal(); if (this.onRemote) this.onRemote(changed); }
+      if (changed) DB.saveLocal();
+      this.saveState();
+      if (changed && this.onRemote) this.onRemote(changed);
       return changed;
     },
     async cycle(withPull = true) {
+      if (!enabled || !this.signedIn) return;
+      if (!this.loaded) return this.fullLoad();
       if (this.busy) { if (!withPull) this.schedule(); return; }
       this.busy = true;
       try {
         await this.push();
         if (withPull) await this.pull();
-        this.online = true; this.lastOk = Date.now(); this.error = '';
-      } catch (e) { this.online = false; this.error = String(e.message || e); }
+        this.ok();
+      } catch (e) { this.fail(e); }
       this.busy = false;
+    },
+    ok() { this.online = true; this.lastOk = Date.now(); this.error = ''; },
+    fail(e) {
+      this.online = false; this.error = String(e && e.message || e);
+      if (e && e.session && this.signedIn) { this.forget(); if (this.onSession) this.onSession(); }
     },
     loop() {
       clearTimeout(this.timer);
+      if (!this.signedIn) return;
       const sec = document.hidden ? 30 : (C.pollSeconds || 5);
       this.timer = setTimeout(async () => { await this.cycle(true); this.loop(); }, sec * 1000);
+    },
+
+    // ---------- Вход и выход ----------
+    status() { return rpc('mu_status', { p_property: DB.pid() }).catch(() => ({ ok: false })); },
+    // fn — mu_login, mu_register, mu_setup, mu_visitor, mu_qr или mu_join. Возвращает { ok, user } или { ok: false, error }
+    async signIn(fn, args) {
+      let res;
+      try { res = await rpc(fn, Object.assign({ p_property: DB.pid() }, args)); }
+      catch (e) { return { ok: false, error: 'Нет связи с сервером. Проверьте интернет и попробуйте ещё раз' }; }
+      if (!res || !res.ok) return res || { ok: false, error: 'Сервер не ответил' };
+      this.forget(true);
+      this.auth = { token: res.token, login: res.login, role: res.role };
+      ls.set(SESSION, JSON.stringify(this.auth));
+      DB.setSession(res.login);
+      await this.restart();
+      const user = this.loaded && DB.me();
+      if (!user) { const err = this.loaded ? 'Профиль не найден на сервере' : 'Не удалось загрузить данные. Попробуйте ещё раз'; this.signOut(); return { ok: false, error: err }; }
+      return Object.assign({}, res, { user });
+    },
+    signOut() {
+      if (this.signedIn) rpc('mu_logout', { p_token: this.auth.token }).catch(() => {});
+      this.forget();
+    },
+    // Стереть с телефона сессию и все данные: следующий человек на этом телефоне ничего не увидит
+    forget(keepData) {
+      clearTimeout(this.timer); clearTimeout(this.pushTimer);
+      this.auth = null; this.loaded = false; this.snap = {}; this.cursor = null; this.online = false;
+      ls.del(SESSION);
+      ls.keys().filter(k => k.indexOf(STATE) === 0).forEach(k => ls.del(k));
+      if (!keepData) DB.wipe();
+    },
+    // Вызов для экранов управляющего: доступы персонала, ключи QR, смена пароля
+    async call(fn, args) {
+      try { return await rpc(fn, Object.assign({ p_token: this.auth && this.auth.token, p_property: this.property }, args)); }
+      catch (e) {
+        if (e.session) { this.forget(); if (this.onSession) this.onSession(); }
+        return { ok: false, error: e.denied ? 'Недостаточно прав' : e.session ? 'Сессия закончилась' : 'Нет связи с сервером' };
+      }
     }
   };
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && SYNC.ready) { SYNC.cycle(true); SYNC.loop(); } });
-  window.addEventListener('online', () => { if (SYNC.ready) SYNC.cycle(true); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && SYNC.ready && SYNC.signedIn) { SYNC.cycle(true); SYNC.loop(); } });
+  window.addEventListener('online', () => { if (SYNC.ready && SYNC.signedIn) SYNC.cycle(true); });
   window.SYNC = SYNC;
 })();

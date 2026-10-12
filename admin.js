@@ -289,13 +289,23 @@ function quickSale(gid) {
   const g = CAT.goods.find(x => x.id === gid);
   ask(`${g.name}, ${money(g.price)}`, 'Продажа попадёт в кассу как наличные.', 'Продать', () => { DB.addTx({ type: 'in', amount: g.price, cat: 'goods', title: g.name, method: 'Наличные' }); render(); toast('Продажа в кассе'); });
 }
-function qrSheet(unitId) {
-  const u = unitId === 'checkin' ? { name: 'Отметка прихода на смену' } : DB.unit(unitId), url = location.href.split('#')[0] + (unitId === 'checkin' ? '#checkin' : '#qr-' + unitId);
+// С общей базой в QR стола зашит секретный ключ: без него войти как гость этого дома нельзя
+async function qrSheet(unitId, rotate) {
+  if (SRV() && unitId !== 'checkin' && (!S.qrKeys || rotate || !S.qrKeys[unitId])) {
+    sheet(sheetHead('QR-код', 'Получаем ключ…'));
+    const r = await SYNC.call('mu_qr_keys', { p_rotate: rotate ? unitId : null });
+    if (!r.ok) { closeSheet(); return toast(r.error); }
+    S.qrKeys = r.keys;
+    if (rotate) toast('Выпущен новый код. Старый больше не работает, распечатайте этот');
+  }
+  const key = SRV() && unitId !== 'checkin' ? '-' + S.qrKeys[unitId] : '';
+  const u = unitId === 'checkin' ? { name: 'Отметка прихода на смену' } : DB.unit(unitId), url = location.href.split('#')[0] + (unitId === 'checkin' ? '#checkin' : '#qr-' + unitId + key);
   let code = '';
   try { if (window.qrcode) { const q = window.qrcode(0, 'M'); q.addData(url); q.make(); code = `<div class="qr">${q.createSvgTag({ cellSize: 4, margin: 0, scalable: true })}</div>`; } } catch (e) { code = ''; }
   sheet(sheetHead('QR-код', esc(u.name)) + `${code || '<p class="muted small">QR-код не загрузился, но ссылка ниже работает так же.</p>'}
     <div class="code" id="qr-url">${esc(url)}</div>
-    <button class="btn block" onclick="copyText(document.getElementById('qr-url').textContent,'Ссылка скопирована')">${ic('copy', 'sm')} Скопировать ссылку</button>`);
+    <button class="btn block" onclick="copyText(document.getElementById('qr-url').textContent,'Ссылка скопирована')">${ic('copy', 'sm')} Скопировать ссылку</button>
+    ${key ? `<button class="btn block ghost" onclick="ask('Выпустить новый код?','Старый QR на столе перестанет работать. Пригодится, если ссылку переслали посторонним.','Выпустить',()=>qrSheet('${unitId}',true),true)">Выпустить новый код</button>` : ''}`);
 }
 function standardsSheet() {
   const d = DB.d;
@@ -691,9 +701,67 @@ V.m_team = () => {
     return `<section class="card"><div class="card-h"><div class="li" style="padding:0;border:0"><span class="avatar">${esc(u.name[0])}</span><span class="li-main"><span class="li-t">${esc(u.name)}</span><br><span class="li-s">${esc(u.title)}${on ? ', на базе с ' + T.stamp(on.in).split(', ')[1] : ''}</span></span></div>${m ? `<span style="font-size:26px" title="${esc(m.tags.join(', '))}">${MOODS[m.mood - 1]}</span>` : ''}</div>
       <div class="stats"><div class="stat"><b>${shifts}</b><span>смен в месяце</span></div><div class="stat"><b>${u.role === 'staff' ? u.points || 0 : '—'}</b><span>баллов</span></div><div class="stat"><b>${money(pay)}</b><span>к выплате</span></div></div>
       ${u.role === 'staff' ? `<span class="chip ${u.trained ? 'ok' : 'warn'}">${u.trained ? `Обучение пройдено${u.course ? `, ${u.course.score} из ${CAT.course.quiz.length}` : ''}` : 'Ещё не прошёл обучение: баня ему не назначается'}</span>` : ''}
-      ${m && m.tags.length ? `<span class="small muted">Последняя смена: ${esc(m.tags.join(', ').toLowerCase())}</span>` : ''}</section>`;
-  }).join('') + `<button class="btn block ghost" onclick="standardsSheet()">${ic('book', 'sm')} Стандарты и эталонные фото</button>`;
+      ${m && m.tags.length ? `<span class="small muted">Последняя смена: ${esc(m.tags.join(', ').toLowerCase())}</span>` : ''}
+      <button class="btn sm ghost" onclick="accessSheet('${esc(u.login)}')">${ic('lock', 'sm')} Вход в приложение</button></section>`;
+  }).join('') + `<button class="btn block" onclick="staffSheet()">${ic('plus', 'sm')} Добавить сотрудника</button>
+  <button class="btn block ghost" onclick="standardsSheet()">${ic('book', 'sm')} Стандарты и эталонные фото</button>`;
 };
+
+// --- Доступ сотрудников: логин и пароль. С общей базой пароль хранится только на сервере, в зашифрованном виде ---
+const ROLE_T = { staff: 'Персонал', instructor: 'Инструктор' };
+async function accessSheet(login) {
+  const u = DB.user(login); if (!u) return;
+  let m = null;
+  if (SRV()) {
+    sheet(sheetHead('Вход в приложение', esc(u.name)) + '<p class="muted small">Проверяем доступ…</p>');
+    const r = await SYNC.call('mu_members', {});
+    if (!r.ok) { closeSheet(); return toast(r.error); }
+    m = r.members.find(x => x.login.toLowerCase() === login.toLowerCase()) || null;
+  } else m = u.pass ? { active: true, hasPass: true } : null;
+  const st = !m ? ['bad', 'Доступа нет'] : !m.active ? ['bad', 'Отключён'] : ['ok', 'Может входить'];
+  sheet(sheetHead('Вход в приложение', esc(u.name)) + `<div class="form">
+    <div class="li" style="padding:0;border:0"><span class="li-main"><span class="li-t">Логин: <b style="user-select:all">${esc(u.login)}</b></span><br><span class="li-s">${m && m.lastLogin ? 'Последний вход: ' + T.stamp(m.lastLogin) : 'Ещё не входил'}</span></span><span class="chip ${st[0]}">${st[1]}</span></div>
+    ${field(m && m.hasPass ? 'Новый пароль' : 'Пароль', '<input id="ac-p" class="inp" type="text" autocomplete="off" autocapitalize="off" placeholder="Минимум 6 символов">')}
+    <button class="btn block" onclick="accessSave('${esc(u.login)}', true)">${m && m.hasPass ? 'Сменить пароль' : 'Выдать доступ'}</button>
+    ${m && m.active ? `<button class="btn block ghost" onclick="ask('Отключить вход?','${esc(u.name)} больше не сможет открыть приложение. Данные и смены сохранятся.','Отключить',()=>accessSave('${esc(u.login)}', false),true)">Отключить вход</button>` : ''}
+    <p class="small muted">Скажите пароль сотруднику лично. После смены пароля он выйдет на всех телефонах и войдёт заново.</p></div>`);
+}
+async function accessSave(login, on) {
+  const u = DB.user(login), pass = on ? ($('#ac-p') ? $('#ac-p').value.trim() : '') : null;
+  if (on && pass.length < 6) return toast('Пароль — минимум 6 символов');
+  if (SRV()) {
+    const r = await SYNC.call('mu_member_set', { p_login: login, p_role: u.role, p_password: pass, p_active: on });
+    if (!r.ok) return toast(r.error);
+  } else DB.updateUser(login, { pass: on ? pass : '' });
+  closeSheet(); toast(on ? 'Доступ выдан: ' + login : 'Вход отключён');
+}
+function staffSheet() {
+  sheet(sheetHead('Новый сотрудник', 'Появится в графике и сможет входить') + `<div class="form">
+    ${field('Имя', '<input id="st-n" class="inp" placeholder="Например: Ольга">')}
+    ${field('Должность', '<input id="st-t" class="inp" placeholder="Горничная">')}
+    <div class="seg in" id="st-r">${Object.entries(ROLE_T).map(([k, l], i) => `<button class="${i ? '' : 'on'}" data-r="${k}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b===this))">${l}</button>`).join('')}</div>
+    ${field('Телефон', '<input id="st-ph" class="inp" type="tel" placeholder="+7">')}
+    ${field('Логин для входа', '<input id="st-l" class="inp" autocapitalize="off" placeholder="латиницей, например olga">')}
+    ${field('Пароль', '<input id="st-p" class="inp" type="text" autocomplete="off" autocapitalize="off" placeholder="Минимум 6 символов">')}
+    <button class="btn block" id="st-go" onclick="staffAdd()">Добавить</button></div>`);
+}
+async function staffAdd() {
+  const name = val('st-n'), login = val('st-l'), pass = $('#st-p').value.trim(), role = $('#st-r .on').dataset.r;
+  if (!name || !login) return toast('Укажите имя и логин');
+  if (!/^[A-Za-z0-9._-]{3,32}$/.test(login)) return toast('Логин: от 3 латинских букв или цифр');
+  if (pass.length < 6) return toast('Пароль — минимум 6 символов');
+  if (DB.user(login)) return toast('Такой логин уже есть');
+  const btn = $('#st-go'); btn.disabled = true;
+  if (SRV()) {
+    const r = await SYNC.call('mu_member_set', { p_login: login, p_role: role, p_password: pass, p_active: true });
+    if (!r.ok) { btn.disabled = false; return toast(r.error); }
+  }
+  const u = { login, name, role, title: val('st-t') || (role === 'staff' ? 'Персонал' : 'Инструктор'), phone: val('st-ph'), points: 0 };
+  if (role === 'staff') Object.assign(u, { clean: 0, trained: false });
+  if (!SRV()) u.pass = pass;
+  DB.d.users.push(u); DB.save();
+  closeSheet(); render(); toast(name + ' добавлен(а). Логин ' + login);
+}
 function toggleShift(login, ds) { const i = DB.d.shifts.findIndex(s => s.login === login && s.date === ds); if (i >= 0) DB.d.shifts.splice(i, 1); else DB.d.shifts.push({ login, date: ds }); DB.save(); render(); }
 
 // --- Аналитика ---
@@ -741,7 +809,12 @@ V.m_network = () => subhead('Сеть объектов', 'У каждого об
   return `<section class="card ${cur ? 'inv' : ''}"><div class="card-h"><div><span class="h2">${esc(p.name)}</span><br><span class="small muted">${esc(p.place)}</span></div>${cur ? '<span class="chip plain">Открыт</span>' : `<button class="btn sm" onclick="switchProperty('${p.id}')">Перейти</button>`}</div>
     <div class="stats"><div class="stat"><b>${occ} из ${houses.length}</b><span>занято сегодня</span></div><div class="stat"><b>${d.units.length}</b><span>объектов</span></div><div class="stat"><b>${money(rev)}</b><span>за 30 дней</span></div></div></section>`;
 }).join('') + '<p class="small muted" style="padding:0 4px">Новый объект сети добавляется в catalog.js, раздел properties. На сервере у каждого франчайзи будет свой вход и доступ только к своим данным.</p>';
-async function switchProperty(pid) { await DB.useProperty(pid); const u = DB.user('admin'); DB.setSession('admin'); S.user = u; DB.tick(); go('today'); toast('Открыт объект «' + CAT.properties.find(p => p.id === pid).name + '»'); }
+async function switchProperty(pid) {
+  const me = S.user;
+  await DB.useProperty(pid); S.qrKeys = null;
+  let u = DB.user(me.login);
+  if (!u) { u = { login: me.login, name: me.name, role: 'admin', title: me.title || 'Управляющий', phone: me.phone || '', points: 0 }; DB.d.users.push(u); DB.save(); }
+  DB.setSession(me.login); S.user = u; DB.tick(); go('today'); toast('Открыт объект «' + CAT.properties.find(p => p.id === pid).name + '»'); }
 
 // --- Настройки ---
 V.m_settings = () => {
@@ -754,11 +827,12 @@ V.m_settings = () => {
   <div class="sec"><span class="h2">Общая база</span></div>
   <section class="card"><div class="card-h"><span class="h2">${!window.SYNC || !SYNC.enabled ? 'Только этот телефон' : SYNC.online ? 'Подключена' : 'Нет связи'}</span><span class="chip ${window.SYNC && SYNC.enabled ? (SYNC.online ? 'ok' : 'bad') : ''}">${window.SYNC && SYNC.enabled ? (SYNC.online ? 'онлайн' : 'офлайн') : 'выключена'}</span></div>
     <span class="small muted">${!window.SYNC || !SYNC.enabled ? 'Данные хранятся только в памяти этого телефона. Адрес сервера задаётся в config.js.' : SYNC.online ? `Все телефоны видят одни и те же данные. Последняя сверка с сервером: ${T.stamp(SYNC.lastOk)}.` : `Изменения сохраняются в телефоне и уйдут на сервер, когда появится связь.${SYNC.error ? ' Ошибка: ' + esc(SYNC.error) : ''}`}</span>
-    ${window.SYNC && SYNC.enabled ? `<button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button>` : ''}</section>
+    ${window.SYNC && SYNC.enabled ? `<span class="small muted">Вы вошли как <b>${esc(S.user.login)}</b>. Каждый видит только то, что нужно ему для работы.</span>
+    <div class="btns"><button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button><button class="btn sm ghost" onclick="passSheet()">${ic('lock', 'sm')} Мой пароль</button></div>` : ''}</section>
   <div class="sec"><span class="h2">Подключения</span></div>
   <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
-  <div class="btns"><button class="btn ghost" onclick="exportCSV()">${ic('download', 'sm')} Отчёт CSV</button><button class="btn ghost" onclick="resetDemo()">Сбросить демо</button></div>`;
+  <div class="btns"><button class="btn ghost" onclick="exportCSV()">${ic('download', 'sm')} Отчёт CSV</button>${SRV() ? '' : '<button class="btn ghost" onclick="resetDemo()">Сбросить демо</button>'}</div>`;
 };
 
 // --- Ущерб и общий счёт из карточки брони ---
@@ -775,4 +849,17 @@ function settleSheet(bookingId) {
   sheet(sheetHead('Общий счёт', 'Оплата при выезде') + `<div class="card flat"><div class="list">${f.map(x => `<div class="li"><span class="li-main small">${esc(x.title)}</span><b>${money(x.amount)}</b></div>`).join('')}</div></div>
     <div class="total"><span class="muted">Итого</span><b>${money(sum(f))}</b></div>
     <div class="btns">${['Карта', 'Наличные', 'СБП'].map(m => `<button class="btn ghost" onclick="DB.settleFolio(${bookingId},'${m}');closeSheet();render();toast('Счёт оплачен')">${m}</button>`).join('')}</div>`);
+}
+
+// Смена своего пароля (общая база)
+function passSheet() {
+  sheet(sheetHead('Мой пароль', 'После смены остальные телефоны выйдут') + `<div class="form">
+    ${field('Старый пароль', '<input id="pw-o" class="inp" type="password" autocomplete="current-password">')}
+    ${field('Новый пароль', '<input id="pw-n" class="inp" type="password" autocomplete="new-password" placeholder="' + (S.user.role === 'admin' ? 'Минимум 8 символов' : 'Минимум 6 символов') + '">')}
+    <button class="btn block" onclick="passSave()">Сменить пароль</button></div>`);
+}
+async function passSave() {
+  const r = await SYNC.call('mu_password', { p_old: $('#pw-o').value, p_new: $('#pw-n').value });
+  if (!r.ok) return toast(r.error);
+  closeSheet(); toast('Пароль изменён');
 }

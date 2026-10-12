@@ -35,6 +35,7 @@ const ICONS = {
   bag: 'M5 8h14l-1 12H6zM9 8V6a3 3 0 0 1 6 0v2',
   aframe: 'M3 20h18M5 20L12 4l7 16M10 20v-5h4v5',
   plus: 'M12 5v14M5 12h14',
+  lock: 'M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4',
   left: 'M15 5l-7 7 7 7', right: 'M9 5l7 7-7 7',
   x: 'M6 6l12 12M18 6L6 18',
   wifi: 'M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01',
@@ -230,9 +231,11 @@ const themeSeg = () => { const t = DB.prefGet('theme') || 'auto'; return `<div c
 const consentBox = id => `<label class="check"><input type="checkbox" id="${id}"><span class="small">Согласен на обработку персональных данных по 152-ФЗ: имя и телефон нужны только для брони и связи со мной</span></label>`;
 
 let phoneStep = 0;
+const SRV = () => !!(window.SYNC && SYNC.enabled);   // есть общая база: вход и права проверяет сервер
 function renderAuth(mode = 'login') {
   $('#app').hidden = true; $('#auth').hidden = false;
   if (mode !== 'phone') phoneStep = 0;
+  if (SRV()) return renderAuthServer(mode);
   const demo = [['admin', 'admin', 'Управляющий', 'пульт базы'], ['elena', '123', 'Горничная', 'чек-листы и фото'], ['dmitry', '123', 'Инструктор', 'квадроциклы'], ['guest', '123', 'Гость', 'консьерж']];
   const prop = CAT.properties.find(p => p.id === DB.pid()) || CAT.properties[0];
   $('#auth').innerHTML = `<div class="auth-bg">${scene('base', 3)}</div><div class="auth-in">
@@ -266,7 +269,68 @@ function renderAuth(mode = 'login') {
     </div>
     <div class="btns" style="justify-content:center"><button class="link" style="color:rgba(255,255,255,.8);flex:none" onclick="browseVisitor()">Смотреть дома без входа</button><button class="link" style="color:rgba(255,255,255,.6);flex:none" onclick="renderIntro(0)">Про базу</button></div></div>`;
 }
-function doLogin() { quickLogin(val('a-login'), $('#a-pass').value); }
+// Вход с общей базой: без демо-кнопок, пароль проверяет сервер. Пока управляющего нет — экран первого запуска
+function renderAuthServer(mode) {
+  if (S.srvReady === undefined) {
+    S.srvReady = null;
+    SYNC.status().then(r => { S.srvReady = r.ok ? r.ready : undefined; if (!$('#auth').hidden && $('.auth-panel')) renderAuth(mode); });
+  }
+  const prop = CAT.properties.find(p => p.id === DB.pid()) || CAT.properties[0];
+  const setup = S.srvReady === false;
+  $('#auth').innerHTML = `<div class="auth-bg">${scene('base', 3)}</div><div class="auth-in">
+    <div><div class="brand">${esc(prop.name)}</div><p class="brand-sub">${setup ? 'Первый запуск: создайте вход управляющего. Пароль знаете только вы.' : 'База отдыха в сосновом лесу. Дома, баня, беседки и квадроциклы.'}</p></div>
+    <div class="auth-panel">
+      ${setup ? `
+        <form class="form" onsubmit="event.preventDefault();doSetup()">
+          <input id="s-name" class="inp" placeholder="Ваше имя" autocomplete="name" aria-label="Имя">
+          <input id="s-login" class="inp" placeholder="Логин" value="admin" autocomplete="username" aria-label="Логин" autocapitalize="off">
+          <input id="s-pass" class="inp" type="password" placeholder="Пароль, минимум 8 символов" autocomplete="new-password" aria-label="Пароль">
+          <input id="s-pass2" class="inp" type="password" placeholder="Пароль ещё раз" autocomplete="new-password" aria-label="Пароль ещё раз">
+          <button class="btn block" id="auth-go">Создать и войти</button>
+        </form>
+        <p class="hint">Потом в разделе «Персонал» вы выдадите пароли сотрудникам.</p>` : `
+      <div class="seg in">${[['login', 'Вход'], ['reg', 'Регистрация']].map(([k, l]) => `<button class="${mode === k ? 'on' : ''}" onclick="renderAuth('${k}')">${l}</button>`).join('')}</div>
+      ${mode !== 'reg' ? `
+        <form class="form" onsubmit="event.preventDefault();doLogin()">
+          <input id="a-login" class="inp" placeholder="Логин" autocomplete="username" aria-label="Логин" autocapitalize="off">
+          <input id="a-pass" class="inp" type="password" placeholder="Пароль" autocomplete="current-password" aria-label="Пароль">
+          <button class="btn block" id="auth-go">Войти</button>
+        </form>
+        <p class="hint">Сотрудникам логин и пароль выдаёт управляющий. Гости регистрируются сами.</p>` : `
+        <form class="form" onsubmit="event.preventDefault();doRegister()">
+          <input id="r-name" class="inp" placeholder="Имя и фамилия" autocomplete="name" aria-label="Имя и фамилия">
+          <input id="r-phone" class="inp" type="tel" placeholder="Телефон" autocomplete="tel" aria-label="Телефон">
+          <input id="r-login" class="inp" placeholder="Логин латиницей" autocomplete="username" aria-label="Логин" autocapitalize="off">
+          <input id="r-pass" class="inp" type="password" placeholder="Пароль, минимум 6 символов" autocomplete="new-password" aria-label="Пароль">
+          <input id="r-ref" class="inp" placeholder="Код друга, если есть" aria-label="Код приглашения" value="${esc(S.ref || '')}">
+          ${consentBox('r-ok')}
+          <button class="btn block" id="auth-go">Создать аккаунт гостя</button>
+        </form>`}`}
+    </div>
+    ${setup ? '' : `<div class="btns" style="justify-content:center"><button class="link" style="color:rgba(255,255,255,.8);flex:none" onclick="browseVisitor()">Смотреть дома без входа</button><button class="link" style="color:rgba(255,255,255,.6);flex:none" onclick="renderIntro(0)">Про базу</button></div>`}</div>`;
+}
+// Кнопка входа на время запроса к серверу
+async function busy(fn) {
+  const b = $('#auth-go'), t = b && b.textContent;
+  if (b) { if (b.disabled) return; b.disabled = true; b.textContent = 'Секунду…'; }
+  try { return await fn(); } finally { if (b && b.isConnected) { b.disabled = false; b.textContent = t; } }
+}
+async function serverIn(fn, args, after) {
+  const r = await busy(() => SYNC.signIn(fn, args));
+  if (!r || !r.ok) return toast(r && r.error || 'Не получилось, попробуйте ещё раз');
+  S.srvReady = true;
+  launch(r.user); if (after) after(r);
+}
+function doSetup() {
+  const pass = $('#s-pass').value;
+  if (pass !== $('#s-pass2').value) return toast('Пароли не совпадают');
+  serverIn('mu_setup', { p_login: val('s-login'), p_password: pass, p_name: val('s-name') }, () => toast('Готово. Теперь выдайте пароли персоналу в разделе «Персонал»'));
+}
+function doLogin() {
+  if (!SRV()) return quickLogin(val('a-login'), $('#a-pass').value);
+  if (!val('a-login') || !$('#a-pass').value) return toast('Введите логин и пароль');
+  serverIn('mu_login', { p_login: val('a-login'), p_password: $('#a-pass').value });
+}
 function quickLogin(l, p) { const u = DB.auth(l, p); if (u) launch(u); else toast('Логин или пароль не подошли'); }
 function doPhone() {
   if (!phoneStep) {
@@ -281,15 +345,25 @@ function doRegister() {
   const name = val('r-name'), login = val('r-login'), pass = $('#r-pass').value;
   if (!name || !login || !pass) return toast('Заполните имя, логин и пароль');
   if (!$('#r-ok').checked) return toast('Нужно согласие на обработку данных');
+  if (SRV()) return serverIn('mu_register', { p_login: login, p_password: pass, p_name: name, p_phone: val('r-phone'), p_ref: val('r-ref') },
+    r => { S.ref = ''; if (r.ref) toast(`Скидка ${DB.S.refPct}% на первую бронь уже ваша`); });
   const r = DB.register(name, login, pass, val('r-phone'), val('r-ref'));
   if (!r.ok) return toast(r.msg);
   launch(r.user); if (r.ref) toast(`Скидка ${DB.S.refPct}% на первую бронь уже ваша`);
 }
-function browseVisitor() { launch(DB.visitor()); go('g_book'); }
-function logout() { DB.logout(); S.user = null; S.cart = {}; closeSheet(); renderAuth(); window.scrollTo(0, 0); }
+function browseVisitor() {
+  if (SRV()) return serverIn('mu_visitor', {}, () => go('g_book'));
+  launch(DB.visitor()); go('g_book');
+}
+function logout() {
+  if (SRV()) SYNC.signOut(); else DB.logout();   // с общей базой с телефона стираются и данные
+  S.user = null; S.cart = {}; S.qrKeys = null; closeSheet(); renderAuth(); window.scrollTo(0, 0);
+}
+// Гостю с общей базой ночные проверки не нужны: брони закрывает и уборки ставит телефон персонала
+const canTick = u => u && (!SRV() || u.role !== 'guest');
 
 function launch(user) {
-  S.user = user; DB.tick();
+  S.user = user; if (canTick(user)) DB.tick();
   $('#auth').hidden = true; $('#auth').innerHTML = ''; $('#app').hidden = false;
   go(NAV[user.role][0][0]);
 }
@@ -366,15 +440,21 @@ function renderPay() {
     <button class="btn block" id="pay-go" onclick="doPay()">${p.method === 'В счёт проживания' ? 'Добавить в счёт' : due ? `Оплатить ${money(due)}` : 'Подтвердить'}</button>
     <p class="small muted" style="text-align:center">Демо-режим: деньги не списываются. После подключения эквайринга здесь откроется страница банка, а чек придёт на телефон.</p>`);
 }
-function applyCert() {
-  const c = DB.cert(val('pay-cert')); if (!c) return toast('Сертификат не найден или уже потрачен');
+async function applyCert() {
+  // С общей базой код проверяет сервер: чужие сертификаты телефону не видны
+  const c = SRV() ? await SYNC.call('mu_cert', { p_code: val('pay-cert'), p_amount: 0 }) : DB.cert(val('pay-cert'));
+  if (!c || c.ok === false) return toast(c && c.error || 'Сертификат не найден или уже потрачен');
   payCtx.certCode = c.code; payCtx.cert = Math.min(c.balance, payCtx.amount - payCtx.bonus); renderPay();
 }
 async function doPay() {
   const p = payCtx, btn = $('#pay-go');
   if (p.method !== 'В счёт проживания') { btn.disabled = true; btn.textContent = 'Связываемся с банком…'; await new Promise(r => setTimeout(r, 900)); }
   if (p.bonus) DB.updateUser(S.user.login, { bonus: (S.user.bonus || 0) - p.bonus });
-  if (p.cert) DB.useCert(p.certCode, p.cert);
+  if (p.cert && SRV()) {
+    const r = await SYNC.call('mu_cert', { p_code: p.certCode, p_amount: p.cert });
+    if (!r.ok) { btn.disabled = false; renderPay(); return toast(r.error); }
+    p.cert = r.taken; SYNC.cycle(true);
+  } else if (p.cert) DB.useCert(p.certCode, p.cert);
   const info = { paid: p.amount - p.bonus - p.cert, bonus: p.bonus, cert: p.cert };
   closeSheet();
   p.onPaid(p.method, info);
@@ -467,7 +547,7 @@ const LOAD = [
   ['Шрифты', () => document.fonts && document.fonts.load ? Promise.race([Promise.all(['600 16px Onest', '400 16px Onest', '500 16px Unbounded'].map(f => document.fonts.load(f, 'Медвежий угол 123 ₽'))), wait(2500)]) : null],
   ['Дома и лес', () => { DB.d.units.forEach(u => { unitScene(u); if (u.kind === 'house') { const sd = u.id.charCodeAt(1); scene(u.scene, sd, '', 'aframe'); scene(u.scene, sd, '', 'barn'); scene(u.scene, sd + 2, '', 'creek'); } }); scene('base', 3); scene('quad', 5); }],
   ['Фотографии', () => Promise.race([Promise.all([].concat(DB.d.units.map(u => u.photo), ...Object.values(CAT.houses).map(h => h.photos || []), Object.values(DB.d.refs || {})).filter(Boolean).map(preloadImg)), wait(4000)])],
-  ['Брони и задачи', () => DB.tick()]
+  ['Брони и задачи', () => { if (canTick(DB.me())) DB.tick(); }]
 ];
 async function loader(next) {
   closeSheet(); $('#app').hidden = true; $('#auth').hidden = false;
@@ -481,7 +561,7 @@ async function loader(next) {
     try { await Promise.all([Promise.race([LOAD[i][1](), wait(15000)]), wait(S.warm ? 260 : 420)]); } catch (e) { /* не получилось подгрузить заранее — подгрузится позже */ }
   }
   S.warm = true;
-  if (window.SYNC && SYNC.enabled && !SYNC.online && !S.offlineWarned) { S.offlineWarned = true; setTimeout(() => toast('Нет связи с сервером. Работаем на данных телефона, изменения отправятся позже'), 400); }
+  if (SRV() && SYNC.signedIn && !SYNC.online && !S.offlineWarned) { S.offlineWarned = true; setTimeout(() => toast('Нет связи с сервером. Работаем на данных телефона, изменения отправятся позже'), 400); }
   const el = $('.load'); if (!el) return;
   el.classList.add('out'); await wait(320);
   next();
@@ -496,18 +576,26 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('#a
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // Куда вести после загрузки: QR со стола, приглашение в компанию, ссылка друга, отметка смены
-function route() {
+async function route() {
   const h = location.hash;
   let user = DB.me();
-  const qr = /^#qr-([a-z0-9]+)$/i.exec(h);          // QR на столе в доме или беседке: …#qr-h1
+  if (SRV() && !SYNC.signedIn) user = null;
+  const qr = /^#qr-([a-z0-9]+)(?:-([a-f0-9]+))?$/i.exec(h);  // QR на столе в доме или беседке: …#qr-h1-<ключ>
   const join = /^#join-([A-Z0-9]+)$/i.exec(h);      // приглашение в бронь компании: …#join-G1234
   const ref = /^#ref-([A-Z0-9]+)$/i.exec(h);        // ссылка друга со скидкой: …#ref-KOSTYA
-  if (qr) user = DB.qrLogin(qr[1]) || user;
-  if (join && !user) user = DB.joinGroup(join[1].toUpperCase());
+  if (SRV() && (qr || join)) {
+    if (history.replaceState) history.replaceState(null, '', location.pathname + location.search);   // ключ не остаётся в адресе
+    if (!user) {
+      const r = qr ? await SYNC.signIn('mu_qr', { p_unit: qr[1], p_key: qr[2] || '' }) : await SYNC.signIn('mu_join', { p_code: join[1].toUpperCase() });
+      if (r.ok) user = r.user; else S.flash = r.error;
+    }
+  } else if (qr) user = DB.qrLogin(qr[1]) || user;
+  if (join && !user && !SRV()) user = DB.joinGroup(join[1].toUpperCase());
   if (ref && !user) { S.ref = ref[1].toUpperCase(); DB.prefSet('intro', '1'); return renderAuth('reg'); }
   // QR на воротах для персонала: …#checkin отмечает приход на смену
   if (h === '#checkin' && user && user.role !== 'guest' && !DB.onShift(user.login)) { DB.checkIn(user.login); S.flash = 'Приход на смену отмечен'; }
-  if (user) { launch(user); if (S.flash) toast(S.flash); } else renderAuth();
+  if (user) launch(user); else renderAuth();
+  if (S.flash) { toast(S.flash); S.flash = ''; }
 }
 
 // Данные с сервера изменились: обновляем экран, но не мешаем, если открыта форма
@@ -518,7 +606,12 @@ function onRemoteChange() {
 
 document.addEventListener('DOMContentLoaded', function boot() {
   DB.load(); applyTheme();
-  if (window.SYNC) { SYNC.onRemote = onRemoteChange; if (SYNC.enabled) SYNC.start(); }
+  if (window.SYNC) {
+    SYNC.onRemote = onRemoteChange;
+    SYNC.onSession = () => { if (S.user) { S.user = null; closeSheet(); renderAuth(); toast('Сессия закончилась или доступ изменён. Войдите снова'); } };
+    SYNC.onDenied = () => { if (Date.now() - (S.deniedAt || 0) > 8000) { S.deniedAt = Date.now(); toast('Часть изменений не сохранилась: на это нет прав'); } };
+    if (SYNC.enabled) SYNC.start();
+  }
   if (!DB.prefGet('intro') && !location.hash) renderIntro(0);   // первый запуск: приветствие, база грузится в фоне
   else loader(route);
 });

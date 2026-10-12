@@ -79,6 +79,7 @@ V.shift = () => {
     <div class="li"><span class="li-main li-s">Один балл равен ${money(CAT.pointRate)}</span></div></div></section>` : `
   <div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><b>${rides.length}</b><span>выездов сегодня</span></div><div class="stat"><b>${Math.round(sum(rides, r => r.hours) * 10) / 10}</b><span>моточасов сегодня</span></div></div>`) + `
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
+  ${SRV() ? `<button class="btn block ghost" onclick="passSheet()">${ic('lock', 'sm')} Сменить пароль</button>` : ''}
   <button class="btn block line" onclick="logout()">${ic('logout', 'sm')} Выйти</button>`;
 };
 let moodPick = 0, moodTags = [];

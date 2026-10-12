@@ -281,6 +281,8 @@
       return ok;
     },
     reset() { CAT.properties.forEach(p => store.del(VER + p.id)); store.del(SESSION_KEY); store.del('mu_pid'); this.load(); },
+    // Выход с общей базой: стереть с телефона все данные и сессию
+    wipe() { CAT.properties.forEach(p => store.del(VER + p.id)); store.del(SESSION_KEY); this.load(); },
     useProperty(pid) { store.set('mu_pid', pid); this.load(); if (window.SYNC && window.SYNC.enabled) return window.SYNC.restart(); },
     peek(pid) { // данные другого объекта сети, только для сводки владельца
       if (pid === this.pid()) return this.d;
@@ -748,7 +750,7 @@
     },
 
     // --- Сертификаты, абонементы, заявки ---
-    buyCert(amount, buyer, to) { const c = { code: 'GIFT-' + code(4, Date.now()), amount, balance: amount, buyer, to, ts: Date.now() }; this.d.certs.unshift(c); this.addTx({ type: 'in', amount, cat: 'pass', title: `Сертификат ${c.code}, ${buyer}`, method: 'Карта' }, true); this.save(); return c; },
+    buyCert(amount, buyer, to, login) { const c = { code: 'GIFT-' + code(4, Date.now()) + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(), amount, balance: amount, buyer, to, login: login || '', ts: Date.now() }; this.d.certs.unshift(c); this.addTx({ type: 'in', amount, cat: 'pass', title: `Сертификат ${c.code}, ${buyer}`, method: 'Карта' }, true); this.save(); return c; },
     cert(codeStr) { return this.d.certs.find(c => c.code === String(codeStr || '').trim().toUpperCase() && c.balance > 0); },
     useCert(codeStr, amount) { const c = this.cert(codeStr); if (!c) return 0; const take = Math.min(c.balance, amount); c.balance -= take; this.save(); return take; },
     buyPass(productId, user) {
