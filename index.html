@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0c0b">
+  <title>Медвежий угол</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Unbounded:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+
+  <!-- Вход и регистрация. Содержимое рисует app.js -->
+  <div id="auth"></div>
+
+  <!-- Приложение: один экран и док. Экраны всех четырёх ролей собирает app.js -->
+  <div id="app" hidden>
+    <main id="view"></main>
+    <nav id="dock" aria-label="Разделы"></nav>
+  </div>
+
+  <!-- Слои поверх экрана: шторка с формой, подтверждение, уведомление -->
+  <div id="sheet" class="layer" hidden></div>
+  <div id="ask" class="layer" hidden></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <!-- QR-коды для столов. Если библиотека не загрузилась, приложение покажет обычную ссылку -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+  <script src="catalog.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+  <script src="admin.js"></script>
+  <script src="staff.js"></script>
+  <script src="guest.js"></script>
+</body>
+</html>
