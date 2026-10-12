@@ -827,8 +827,9 @@ V.m_settings = () => {
   <div class="sec"><span class="h2">Общая база</span></div>
   <section class="card"><div class="card-h"><span class="h2">${!window.SYNC || !SYNC.enabled ? 'Только этот телефон' : SYNC.online ? 'Подключена' : 'Нет связи'}</span><span class="chip ${window.SYNC && SYNC.enabled ? (SYNC.online ? 'ok' : 'bad') : ''}">${window.SYNC && SYNC.enabled ? (SYNC.online ? 'онлайн' : 'офлайн') : 'выключена'}</span></div>
     <span class="small muted">${!window.SYNC || !SYNC.enabled ? 'Данные хранятся только в памяти этого телефона. Адрес сервера задаётся в config.js.' : SYNC.online ? `Все телефоны видят одни и те же данные. Последняя сверка с сервером: ${T.stamp(SYNC.lastOk)}.` : `Изменения сохраняются в телефоне и уйдут на сервер, когда появится связь.${SYNC.error ? ' Ошибка: ' + esc(SYNC.error) : ''}`}</span>
-    ${window.SYNC && SYNC.enabled ? `<span class="small muted">Вы вошли как <b>${esc(S.user.login)}</b>. Каждый видит только то, что нужно ему для работы.</span>
-    <div class="btns"><button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button><button class="btn sm ghost" onclick="passSheet()">${ic('lock', 'sm')} Мой пароль</button></div>` : ''}</section>
+    ${window.SYNC && SYNC.enabled ? `<span class="small muted">Вы вошли как <b>${esc(S.user.login)}</b>. Каждый видит только то, что нужно ему для работы.${PH.count() ? ` Ждут отправки: ${PH.count()} фото.` : ''}</span>
+    ${S.phStats ? `<span class="small muted">Фото в облаке: ${S.phStats.count} шт., ${(S.phStats.bytes / 1048576).toFixed(1)} МБ. Вся база занимает ${(S.phStats.db / 1048576).toFixed(0)} МБ из 500 МБ бесплатного тарифа.</span>` : ''}
+    <div class="btns"><button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button><button class="btn sm ghost" onclick="passSheet()">${ic('lock', 'sm')} Мой пароль</button><button class="btn sm ghost" onclick="photoStats()">${ic('camera', 'sm')} Место под фото</button></div>` : ''}</section>
   <div class="sec"><span class="h2">Подключения</span></div>
   <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
@@ -862,4 +863,10 @@ async function passSave() {
   const r = await SYNC.call('mu_password', { p_old: $('#pw-o').value, p_new: $('#pw-n').value });
   if (!r.ok) return toast(r.error);
   closeSheet(); toast('Пароль изменён');
+}
+
+async function photoStats() {
+  const r = await SYNC.call('mu_photo_stats', {});
+  if (!r.ok) return toast(r.error);
+  S.phStats = r; render();
 }

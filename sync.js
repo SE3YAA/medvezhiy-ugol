@@ -112,6 +112,7 @@
       this.ready = (async () => {
         if (!this.loaded) this.loadState();
         if (this.loaded) await this.cycle(true); else await this.fullLoad();
+        PH.init();
         this.loop();
         return this.online;
       })();
@@ -224,6 +225,7 @@
         await this.push();
         if (withPull) await this.pull();
         this.ok();
+        PH.flush();
       } catch (e) { this.fail(e); }
       this.busy = false;
     },
@@ -266,6 +268,7 @@
       this.auth = null; this.loaded = false; this.snap = {}; this.cursor = null; this.online = false;
       ls.del(SESSION);
       ls.keys().filter(k => k.indexOf(STATE) === 0).forEach(k => ls.del(k));
+      PH.wipe();
       if (!keepData) DB.wipe();
     },
     // Вызов для экранов управляющего: доступы персонала, ключи QR, смена пароля
@@ -277,6 +280,89 @@
       }
     }
   };
+  // ---------- Фото в облаке ----------
+  // Снимок сразу сохраняется в телефоне (IndexedDB) и уходит на сервер в фоне. В данных остаётся ссылка ph:<номер>.
+  // При показе экрана ссылки заменяются на сами фото: из памяти, из телефона или с сервера
+  const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  const PH = {
+    mem: {}, pending: {}, asked: {}, db: null, flushing: false, ready: false,
+    on() { return enabled && SYNC.signedIn; },
+    idb() {
+      if (!this.db) this.db = new Promise(res => {
+        try {
+          const rq = indexedDB.open('mu_photos', 1);
+          rq.onupgradeneeded = () => rq.result.createObjectStore('p');
+          rq.onsuccess = () => res(rq.result); rq.onerror = () => res(null);
+        } catch (e) { res(null); }
+      });
+      return this.db;
+    },
+    async store(mode, fn) {
+      const db = await this.idb(); if (!db) return null;
+      return new Promise(res => {
+        try {
+          const tx = db.transaction('p', mode), rq = fn(tx.objectStore('p'));
+          tx.oncomplete = () => res(rq ? rq.result : null); tx.onerror = tx.onabort = () => res(null);
+        } catch (e) { res(null); }
+      });
+    },
+    save(id, data, pending) { return this.store('readwrite', st => st.put({ id, data, pending }, id)); },
+    // После входа: вспомнить фото, которые ещё не ушли на сервер
+    async init() {
+      if (this.ready) return; this.ready = true;
+      const all = await this.store('readonly', st => st.getAll()) || [];
+      all.forEach(x => { if (x && x.pending) { this.mem[x.id] = x.data; this.pending[x.id] = true; } });
+      this.flush();
+    },
+    add(dataUrl) {
+      const id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      this.mem[id] = dataUrl; this.pending[id] = true;
+      this.save(id, dataUrl, true);
+      setTimeout(() => this.flush(), 100);
+      return 'ph:' + id;
+    },
+    count() { return Object.keys(this.pending).length; },
+    async flush() {
+      if (!this.on() || this.flushing || !this.count()) return;
+      this.flushing = true;
+      try {
+        for (const id of Object.keys(this.pending)) {
+          if (!this.mem[id]) { const x = await this.store('readonly', st => st.get(id)); if (x) this.mem[id] = x.data; else { delete this.pending[id]; continue; } }
+          const r = await rpc('mu_photo_put', { p_token: SYNC.auth.token, p_property: SYNC.property, p_id: id, p_data: this.mem[id] }, 90000);
+          // Сервер ответил отказом (не фото, слишком большое) — повторять бесполезно, снимок остаётся в телефоне
+          delete this.pending[id];
+          await this.save(id, this.mem[id], false);
+          if (r && !r.ok && SYNC.onDenied) SYNC.onDenied(1);
+        }
+      } catch (e) { if (e.session) SYNC.fail(e); }   // нет связи — попробуем при следующей сверке
+      this.flushing = false;
+    },
+    // HTML экрана: src="ph:номер" → сам снимок или серая заглушка, которую заполнит hydrate
+    fix(html) {
+      if (typeof html !== 'string' || html.indexOf('"ph:') < 0) return html;
+      return html.replace(/src="ph:([a-z0-9]+)"/g, (m, id) => this.mem[id] ? `src="${this.mem[id]}" data-ph="${id}"` : `src="${BLANK}" data-ph="${id}" data-ph-wait="1"`);
+    },
+    async hydrate(root) {
+      const imgs = Array.from((root || document).querySelectorAll('img[data-ph-wait]'));
+      if (!imgs.length) return;
+      const ids = Array.from(new Set(imgs.map(i => i.dataset.ph)));
+      for (const id of ids) if (!this.mem[id]) { const x = await this.store('readonly', st => st.get(id)); if (x) this.mem[id] = x.data; }
+      const need = ids.filter(id => !this.mem[id] && !(this.asked[id] > Date.now() - 60000));
+      if (need.length && this.on()) {
+        need.forEach(id => { this.asked[id] = Date.now(); });
+        for (let i = 0; i < need.length; i += 20) {
+          try {
+            const r = await rpc('mu_photo_get', { p_token: SYNC.auth.token, p_property: SYNC.property, p_ids: need.slice(i, i + 20) }, 90000);
+            Object.keys(r && r.photos || {}).forEach(id => { this.mem[id] = r.photos[id]; this.save(id, r.photos[id], false); });
+          } catch (e) { need.slice(i, i + 20).forEach(id => { delete this.asked[id]; }); if (e.session) SYNC.fail(e); }
+        }
+      }
+      document.querySelectorAll('img[data-ph-wait]').forEach(im => { const d = this.mem[im.dataset.ph]; if (d) { im.src = d; im.removeAttribute('data-ph-wait'); } });
+    },
+    wipe() { this.mem = {}; this.pending = {}; this.asked = {}; this.ready = false; return this.store('readwrite', st => st.clear()); }
+  };
+  window.PH = PH;
+
   document.addEventListener('visibilitychange', () => { if (!document.hidden && SYNC.ready && SYNC.signedIn) { SYNC.cycle(true); SYNC.loop(); } });
   window.addEventListener('online', () => { if (SYNC.ready && SYNC.signedIn) SYNC.cycle(true); });
   window.SYNC = SYNC;

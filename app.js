@@ -167,14 +167,14 @@ function closeAsk() { $('#ask').hidden = true; $('#ask').innerHTML = ''; askFn =
 function askOk() { const f = askFn; closeAsk(); if (f) f(); }
 function viewer(html, caption) {
   const el = $('#ask');
-  el.innerHTML = `<div class="scrim" onclick="closeAsk()"></div><div class="viewer" onclick="closeAsk()">${html}<p>${esc(caption || '')}</p></div>`;
-  el.hidden = false;
+  el.innerHTML = `<div class="scrim" onclick="closeAsk()"></div><div class="viewer" onclick="closeAsk()">${PH.fix(html)}<p>${esc(caption || '')}</p></div>`;
+  el.hidden = false; PH.hydrate(el);
 }
 
 function sheet(html) {
   const el = $('#sheet'), was = el.hidden, old = $('.sheet', el), y = old ? old.scrollTop : 0;
-  el.innerHTML = `<div class="scrim" onclick="closeSheet()"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
-  el.classList.toggle('in', was); el.hidden = false; document.body.classList.add('lock');
+  el.innerHTML = `<div class="scrim" onclick="closeSheet()"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${PH.fix(html)}</div>`;
+  el.classList.toggle('in', was); el.hidden = false; document.body.classList.add('lock'); PH.hydrate(el);
   if (!was) $('.sheet', el).scrollTop = y;
 }
 function closeSheet() { const el = $('#sheet'); el.hidden = true; el.innerHTML = ''; document.body.classList.remove('lock'); S.how = null; if (S.dirtyRemote) { S.dirtyRemote = false; render(); } }
@@ -193,10 +193,13 @@ function pickPhoto(cb, camera) {
     rd.onload = () => {
       const im = new Image();
       im.onload = () => {
-        const k = Math.min(1, 720 / Math.max(im.width, im.height)), c = document.createElement('canvas');
+        // С общей базой фото уходит в облако, поэтому можно чётче: 1280 точек вместо 720
+        const cloud = SRV() && SYNC.signedIn, side = cloud ? 1280 : 720;
+        const k = Math.min(1, side / Math.max(im.width, im.height)), c = document.createElement('canvas');
         c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
         c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
-        cb(c.toDataURL('image/jpeg', .6));
+        const url = c.toDataURL('image/jpeg', cloud ? .7 : .6);
+        cb(cloud ? PH.add(url) : url);
       };
       im.onerror = () => toast('Не получилось открыть фото, попробуйте другое');
       im.src = rd.result;
@@ -355,7 +358,8 @@ function browseVisitor() {
   if (SRV()) return serverIn('mu_visitor', {}, () => go('g_book'));
   launch(DB.visitor()); go('g_book');
 }
-function logout() {
+function logout(force) {
+  if (SRV() && !force && PH.count()) return ask('Не все фото отправлены', `${PH.count()} фото ещё на телефоне: не было связи. Если выйти сейчас, они пропадут.`, 'Выйти всё равно', () => logout(true), true);
   if (SRV()) SYNC.signOut(); else DB.logout();   // с общей базой с телефона стираются и данные
   S.user = null; S.cart = {}; S.qrKeys = null; closeSheet(); renderAuth(); window.scrollTo(0, 0);
 }
@@ -381,7 +385,8 @@ function render() {
   S.user = DB.user(S.user.login) || S.user;
   // Шахматка: запоминаем прокрутку, а при первом открытии показываем сегодняшний день и текущий час
   const keep = S.shown === S.tab + S.chess, sx = keep && $('#chess-scroll, #tl-scroll') ? $('#chess-scroll, #tl-scroll').scrollLeft : null;
-  $('#view').innerHTML = V[S.tab]();
+  $('#view').innerHTML = PH.fix(V[S.tab]());
+  PH.hydrate($('#view'));
   S.shown = S.tab + S.chess;
   const sc = $('#chess-scroll, #tl-scroll');
   if (sc) {
@@ -546,7 +551,7 @@ const LOAD = [
   ['Общая база', () => window.SYNC && SYNC.enabled ? (SYNC.ready || SYNC.start()) : null],
   ['Шрифты', () => document.fonts && document.fonts.load ? Promise.race([Promise.all(['600 16px Onest', '400 16px Onest', '500 16px Unbounded'].map(f => document.fonts.load(f, 'Медвежий угол 123 ₽'))), wait(2500)]) : null],
   ['Дома и лес', () => { DB.d.units.forEach(u => { unitScene(u); if (u.kind === 'house') { const sd = u.id.charCodeAt(1); scene(u.scene, sd, '', 'aframe'); scene(u.scene, sd, '', 'barn'); scene(u.scene, sd + 2, '', 'creek'); } }); scene('base', 3); scene('quad', 5); }],
-  ['Фотографии', () => Promise.race([Promise.all([].concat(DB.d.units.map(u => u.photo), ...Object.values(CAT.houses).map(h => h.photos || []), Object.values(DB.d.refs || {})).filter(Boolean).map(preloadImg)), wait(4000)])],
+  ['Фотографии', () => Promise.race([Promise.all([].concat(DB.d.units.map(u => u.photo), ...Object.values(CAT.houses).map(h => h.photos || []), Object.values(DB.d.refs || {})).filter(x => x && !/^ph:/.test(x)).map(preloadImg)), wait(4000)])],
   ['Брони и задачи', () => { if (canTick(DB.me())) DB.tick(); }]
 ];
 async function loader(next) {

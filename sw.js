@@ -1,6 +1,6 @@
 // sw.js — офлайн-режим: приложение открывается в лесу даже без связи.
 // При изменении файлов увеличьте номер версии, чтобы телефоны подтянули обновление.
-const VERSION = 'mu-v14';
+const VERSION = 'mu-v15';
 const FILES = ['./', 'index.html', 'style.css', 'config.js', 'catalog.js', 'db.js', 'sync.js', 'app.js', 'admin.js', 'staff.js', 'guest.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

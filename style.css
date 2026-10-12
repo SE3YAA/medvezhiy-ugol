@@ -507,3 +507,8 @@ input[type="date"].inp::-webkit-date-and-time-value, input[type="time"].inp::-we
 .card-h > .muted { display: inline-flex; align-items: center; gap: 6px; }
 .card.inv .stat { background: rgba(128, 128, 128, .2); }
 .card.inv .stat span { color: inherit; opacity: .65; }
+
+/* Фото из облака, пока загружается */
+img[data-ph-wait] { background: linear-gradient(110deg, rgba(127,127,127,.12) 30%, rgba(127,127,127,.24) 50%, rgba(127,127,127,.12) 70%) 0 0 / 300% 100%; animation: ph-wait 1.4s linear infinite; min-height: 64px; }
+@keyframes ph-wait { to { background-position: -300% 0; } }
+@media (prefers-reduced-motion: reduce) { img[data-ph-wait] { animation: none; } }

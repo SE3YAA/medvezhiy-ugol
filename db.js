@@ -595,7 +595,8 @@
       if (u && !['delivery', 'food', 'generic'].includes(t.tpl)) {
         u.status = 'ready';
         this.d.accepts.unshift({ id: this.id(), unitId: u.id, taskId: t.id, by: user.name, byLogin: user.login, ts: Date.now(), state: 'ok', photos });
-        this.d.accepts.slice(14).forEach(a => { a.photos = []; });
+        // Снимки в памяти телефона (без общей базы) храним только для последних 14 приёмок. Ссылки на облако — навсегда
+        this.d.accepts.slice(14).forEach(a => { a.photos = (a.photos || []).filter(p => !/^data:/.test(p.src || '')); });
         user.clean = (user.clean || 0) + 1;
         this.notify('admin', `${u.short} сдан: ${user.name} приложила фото, посмотрите`, 'camera', 'accept');
         // Расход со склада: бельё и полотенца на каждую уборку дома, веники и дрова на баню
@@ -656,7 +657,7 @@
       q.status = q.toService <= 0 ? 'service' : 'park';
       if (defects) q.defects = defects;
       this.stockAdjust('fuel', -Math.round(hours * 4), true);
-      this.d.rides.filter(x => x.status === 'done').slice(0, -4).forEach(x => { x.photos = {}; });
+      this.d.rides.filter(x => x.status === 'done').slice(0, -4).forEach(x => { Object.keys(x.photos || {}).forEach(k => { if (/^data:/.test(x.photos[k])) delete x.photos[k]; }); });
       this.save();
       return q;
     },
