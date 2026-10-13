@@ -149,6 +149,9 @@ const shotHTML = p => p.src ? `<img src="${p.src}" alt="${esc(p.label)}">` : dem
 //  2. Слои: уведомление, подтверждение, шторка, просмотр фото
 // =====================================================================
 let toastT = 0;
+// Любая непойманная ошибка видна на экране: так по скриншоту сразу понятно, что сломалось
+window.addEventListener('error', e => { try { toast('Ошибка: ' + (e.message || 'неизвестная')); } catch (x) { /* экран ещё не готов */ } });
+window.addEventListener('unhandledrejection', e => { try { toast('Ошибка: ' + ((e.reason && e.reason.message) || e.reason || 'неизвестная')); } catch (x) { /* экран ещё не готов */ } });
 function toast(msg) {
   const el = $('#toast'); el.textContent = msg; el.classList.add('on');
   clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), 3200);
@@ -361,7 +364,7 @@ function browseVisitor() {
 function logout(force) {
   if (SRV() && !force && PH.count()) return ask('Не все фото отправлены', `${PH.count()} фото ещё на телефоне: не было связи. Если выйти сейчас, они пропадут.`, 'Выйти всё равно', () => logout(true), true);
   // уведомления этого человека на этот телефон больше не приходят; данные стираются после отписки
-  if (SRV()) NOTIF.off().finally(() => SYNC.signOut()); else DB.logout();   // с общей базой с телефона стираются и данные
+  if (SRV() && window.NOTIF) NOTIF.off().finally(() => SYNC.signOut()); else if (SRV()) SYNC.signOut(); else DB.logout();   // с общей базой с телефона стираются и данные
   S.user = null; S.cart = {}; S.qrKeys = null; closeSheet(); renderAuth(); window.scrollTo(0, 0);
 }
 // Гостю с общей базой ночные проверки не нужны: брони закрывает и уборки ставит телефон персонала
@@ -369,7 +372,7 @@ const canTick = u => u && (!SRV() || u.role !== 'guest');
 
 function launch(user) {
   S.user = user; if (canTick(user)) DB.tick();
-  if (SRV()) { SYNC.pub('mu_pay_ready').then(r => { S.payReady = !!(r && r.ready); }); setTimeout(payPendingCheck, 1500); NOTIF.refresh(); }
+  if (SRV()) { SYNC.pub('mu_pay_ready').then(r => { S.payReady = !!(r && r.ready); }); setTimeout(payPendingCheck, 1500); if (window.NOTIF) NOTIF.refresh(); }
   $('#auth').hidden = true; $('#auth').innerHTML = ''; $('#app').hidden = false;
   go(NAV[user.role][0][0]);
 }
@@ -682,7 +685,7 @@ async function route() {
 }
 
 // ---------- Уведомления на телефон: карточка в настройках и профилях ----------
-const notifCard = () => SRV() ? `<div class="sec"><span class="h2">Уведомления на телефон</span></div><section class="card" id="nf-card"><span class="small muted">Проверяем…</span></section>` : '';
+const notifCard = () => SRV() && window.NOTIF ? `<div class="sec"><span class="h2">Уведомления на телефон</span></div><section class="card" id="nf-card"><span class="small muted">Проверяем…</span></section>` : '';
 async function renderNotif() {
   const el = $('#nf-card'); if (!el) return;
   const st = await NOTIF.state(), box = $('#nf-card'); if (!box) return;

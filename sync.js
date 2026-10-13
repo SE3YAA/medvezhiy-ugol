@@ -365,6 +365,73 @@
   };
   window.PH = PH;
 
+  // ---------- Уведомления на телефон (Web Push) ----------
+  // Подписка живёт в браузере телефона, адрес подписки хранится на сервере (push.sql).
+  // На айфоне работает, только если приложение добавлено на экран «Домой» (iOS 16.4+)
+  const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), c => c.charCodeAt(0));
+  const b64u = buf => btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const NOTIF = {
+    supported() { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; },
+    ios() { return /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); },
+    standalone() { return window.matchMedia && matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; },
+    // Что показать человеку: 'on' | 'off' | 'denied' | 'install' (айфон без экрана «Домой») | 'unsupported'
+    async state() {
+      if (this.ios() && !this.standalone()) return 'install';
+      if (!this.supported() || !enabled) return 'unsupported';
+      if (Notification.permission === 'denied') return 'denied';
+      const sub = await this.sub();
+      if (!sub || Notification.permission !== 'granted') return 'off';
+      const r = await SYNC.call('mu_push_status', { p_endpoint: sub.endpoint });
+      return r.ok && r.on ? 'on' : 'off';
+    },
+    // Фоновая служба (sw.js) может не запуститься, например в приватном режиме: не ждём её дольше 3 секунд
+    reg() { return this.supported() ? Promise.race([navigator.serviceWorker.ready, new Promise(r => setTimeout(() => r(null), 3000))]).catch(() => null) : Promise.resolve(null); },
+    async sub() {
+      try { const reg = await this.reg(); return reg ? await reg.pushManager.getSubscription() : null; } catch (e) { return null; }
+    },
+    // Ключ VAPID: если его ещё нет, первый включивший управляющий создаёт его в своём телефоне
+    async key() {
+      const r = await SYNC.pub('mu_push_key');
+      if (r && r.key) return r.key;
+      if (SYNC.role !== 'admin') return null;
+      const k = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+      const pub = b64u(await crypto.subtle.exportKey('raw', k.publicKey));
+      const priv = JSON.stringify(await crypto.subtle.exportKey('jwk', k.privateKey));
+      const s = await SYNC.call('mu_push_setup', { p_public: pub, p_private: priv });
+      return s.ok ? s.key : null;
+    },
+    // Вызывать только по нажатию кнопки: иначе iOS не покажет запрос разрешения
+    async on() {
+      const st = await this.state();
+      if (st === 'install' || st === 'unsupported' || st === 'denied') return { ok: false, state: st };
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') return { ok: false, state: perm === 'denied' ? 'denied' : 'off' };
+      const key = await this.key();
+      if (!key) return { ok: false, error: 'Управляющий ещё не включил уведомления. Попросите его включить их у себя первым' };
+      try {
+        const reg = await this.reg();
+        if (!reg) return { ok: false, error: 'Не запустилась фоновая служба приложения. Закройте приложение и откройте снова' };
+        let sub = await reg.pushManager.getSubscription();
+        const keyBytes = unb64u(key);
+        if (sub && sub.options && sub.options.applicationServerKey && b64u(sub.options.applicationServerKey) !== key) { await sub.unsubscribe(); sub = null; }
+        if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes });
+        const r = await SYNC.call('mu_push_sub', { p_sub: sub.toJSON() });
+        return r.ok ? { ok: true } : { ok: false, error: r.error };
+      } catch (e) { return { ok: false, error: 'Телефон не дал подписаться: ' + (e && e.message || e) }; }
+    },
+    async off() {
+      const sub = await this.sub(); if (!sub) return { ok: true };
+      try { if (SYNC.signedIn) await SYNC.call('mu_push_unsub', { p_endpoint: sub.endpoint }); await sub.unsubscribe(); } catch (e) { /* уже отписаны */ }
+      return { ok: true };
+    },
+    // При каждом входе: подписка этого телефона закрепляется за тем, кто сейчас вошёл
+    async refresh() {
+      if (!this.supported() || !SYNC.signedIn || Notification.permission !== 'granted') return;
+      const sub = await this.sub(); if (sub) SYNC.call('mu_push_sub', { p_sub: sub.toJSON() });
+    }
+  };
+  window.NOTIF = NOTIF;
+
   document.addEventListener('visibilitychange', () => { if (!document.hidden && SYNC.ready && SYNC.signedIn) { SYNC.cycle(true); SYNC.loop(); } });
   window.addEventListener('online', () => { if (SYNC.ready && SYNC.signedIn) SYNC.cycle(true); });
   window.SYNC = SYNC;
