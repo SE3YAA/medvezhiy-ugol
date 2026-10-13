@@ -546,6 +546,7 @@
     // --- Касса и общий счёт гостя ---
     addTx(x, silent) {
       const n = Object.assign({ id: this.id(), ts: Date.now(), cat: 'other', method: 'Наличные', bookingId: null }, x);
+      if (this.curPay && n.type === 'in' && n.paid !== false) n.payId = this.curPay;   // номер онлайн-платежа: сервер сверит его с банком
       if (n.type === 'in' && n.paid !== false) n.receipt = n.id % 1000000;
       this.d.tx.unshift(n);
       if (!silent) this.save();
@@ -555,7 +556,7 @@
     deleteTx(id) { this.d.tx = this.d.tx.filter(t => t.id !== id); this.save(); },
     folio(stayId) { return this.d.tx.filter(x => x.folio === stayId && x.paid === false); },
     settleFolio(stayId, method) {
-      this.folio(stayId).forEach(x => { x.paid = true; x.method = method; x.receipt = this.id() % 1000000; });
+      this.folio(stayId).forEach(x => { x.paid = true; x.method = method; x.receipt = this.id() % 1000000; if (this.curPay) x.payId = this.curPay; });
       this.save();
     },
 

@@ -219,6 +219,20 @@ begin
   end case;
 end $$;
 
+-- Оплата гостя должна быть подтверждена банком, если онлайн-оплата подключена (payments.sql). Иначе — демо-режим
+create or replace function mu.pay_allowed(p_property text, p_me text, new jsonb) returns boolean
+language plpgsql stable as $$
+declare ok boolean;
+begin
+  if to_regclass('mu.pay_config') is null then return true; end if;
+  execute 'select not exists (select 1 from mu.pay_config where property = $1 and enabled)
+             or coalesce($3->>''paid'', '''') = ''false'' or $3->>''method'' in (''Бонусы'', ''Сертификат'')
+             or exists (select 1 from mu.payments where order_id = $3->>''payId'' and property = $1 and login = $2
+                        and status = ''CONFIRMED'' and created_at > now() - interval ''1 day'')'
+    into ok using p_property, p_me, new;
+  return ok;
+end $$;
+
 -- ---------- Что может менять каждая роль ----------
 -- old — запись на сервере сейчас (null, если её нет или она удалена), new — что прислал телефон
 create or replace function mu.can_write(p_property text, p_role text, p_me text, p_coll text, p_rid text,
@@ -270,7 +284,8 @@ begin
     if p_coll = 'tasks' then return newmine or new->>'login' is null; end if;   -- заказ гостя или уборка перед его заездом
     if p_coll = 'notes' then return new->>'to' in ('admin', 'staff', 'instructor', p_me); end if;
     if p_coll = 'tx' then
-      return new->>'type' = 'in' and (new->>'bookingId' is null or (new->>'bookingId') = any(own) or (new->>'folio') = any(own));
+      return new->>'type' = 'in' and (new->>'bookingId' is null or (new->>'bookingId') = any(own) or (new->>'folio') = any(own))
+         and mu.pay_allowed(p_property, p_me, new);
     end if;
     if p_coll = 'leads' then return true; end if;
     if p_coll = 'users' then return p_rid = p_me and new->>'role' = 'guest'; end if;
@@ -293,7 +308,8 @@ begin
       return mu.same_except(old, new, array['used']) and (new->>'used')::int = (old->>'used')::int + 1;
     when 'tx' then      -- оплата общего счёта при выезде
       return ((old->>'folio') = any(own) or (old->>'bookingId') = any(own))
-         and mu.same_except(old, new, array['paid', 'method', 'receipt']);
+         and mu.same_except(old, new, array['paid', 'method', 'receipt', 'payId'])
+         and mu.pay_allowed(p_property, p_me, new);
     when 'users' then
       if p_rid = p_me then
         return old->>'role' = 'guest' and new->>'role' = 'guest'

@@ -411,7 +411,10 @@ function gBook() {
   const u = DB.unit(val('gb-unit')), s = val('gb-start'), e = val('gb-end'), promo = val('gb-promo'), guests = Number(val('gb-count')) || 2;
   needContact(() => paySheet({ title: `${u.short}, ${T.dm(s)} – ${T.dm(e)}`, amount: q.total, onPaid: (m) => {
     const r = DB.addStay({ unitId: u.id, guest: S.user.name, login: S.user.login, phone: S.user.phone, guests, start: s, end: e, source: 'Приложение', promo, method: m === 'СБП' ? 'Перевод' : 'Карта' });
-    if (!r.ok) return toast(r.msg);
+    if (!r.ok) {
+      if (DB.curPay) { DB.notify('admin', `Гость ${S.user.name} оплатил онлайн ${u.short} на ${T.dm(s)} – ${T.dm(e)}, но даты успели занять. Верните деньги или предложите другой дом`, 'alert', 'cash'); return ask('Даты успели занять', 'Пока шла оплата, этот дом забронировали. Деньги не пропадут: администратор свяжется с вами, вернёт оплату или предложит другой дом.', 'Понятно', () => {}); }
+      return toast(r.msg);
+    }
     go('g_home'); toast(`Дом за вами. Начислено ${money(Math.round(r.booking.base * DB.S.bonusPct / 100))} бонусов`);
   } }));
 }

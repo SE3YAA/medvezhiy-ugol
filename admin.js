@@ -831,7 +831,7 @@ V.m_settings = () => {
     ${S.phStats ? `<span class="small muted">Фото в облаке: ${S.phStats.count} шт., ${(S.phStats.bytes / 1048576).toFixed(1)} МБ. Вся база занимает ${(S.phStats.db / 1048576).toFixed(0)} МБ из 500 МБ бесплатного тарифа.</span>` : ''}
     <div class="btns"><button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button><button class="btn sm ghost" onclick="passSheet()">${ic('lock', 'sm')} Мой пароль</button><button class="btn sm ghost" onclick="photoStats()">${ic('camera', 'sm')} Место под фото</button></div>` : ''}</section>
   <div class="sec"><span class="h2">Подключения</span></div>
-  <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
+  <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => n === 'Онлайн-оплата' && SRV() ? `<button class="li" onclick="paymentsSheet()"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">Т-Банк, карты и СБП</span></span><span class="chip ${S.payReady ? 'ok' : 'plain'}">${S.payReady ? 'Подключено' : 'Не подключено'}</span></button>` : `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
   <div class="btns"><button class="btn ghost" onclick="exportCSV()">${ic('download', 'sm')} Отчёт CSV</button>${SRV() ? '' : '<button class="btn ghost" onclick="resetDemo()">Сбросить демо</button>'}</div>`;
 };
@@ -869,4 +869,15 @@ async function photoStats() {
   const r = await SYNC.call('mu_photo_stats', {});
   if (!r.ok) return toast(r.error);
   S.phStats = r; render();
+}
+
+// Онлайн-платежи через Т-Банк: статус подключения и последние оплаты
+const PAY_ST = { CONFIRMED: ['ok', 'Оплачено'], NEW: ['plain', 'Создан'], FORM_SHOWED: ['plain', 'Открыта оплата'], AUTHORIZING: ['warn', 'В процессе'], '3DS_CHECKING': ['warn', 'Проверка 3-D Secure'], AUTHORIZED: ['warn', 'Ждёт подтверждения'], REJECTED: ['bad', 'Отклонён'], CANCELED: ['bad', 'Отменён'], DEADLINE_EXPIRED: ['bad', 'Истёк'], REFUNDED: ['plain', 'Возврат'], PARTIAL_REFUNDED: ['plain', 'Частичный возврат'], ERROR: ['bad', 'Ошибка'] };
+async function paymentsSheet() {
+  sheet(sheetHead('Онлайн-оплата', 'Т-Банк') + '<p class="muted small">Сверяем с банком…</p>');
+  const r = await SYNC.call('mu_pay_list', {});
+  if (!r.ok) { closeSheet(); return toast(r.error); }
+  S.payReady = r.ready;
+  sheet(sheetHead('Онлайн-оплата', r.ready ? 'Подключено: Т-Банк' : 'Не подключено') + (r.ready ? '' : `<div class="card"><p class="small">Чтобы гости платили картой и по СБП, вставьте ключи терминала Т-Банка в Supabase (файл pay-keys.sql). Пока оплата в приложении демонстрационная.</p></div>`) +
+    (r.payments.length ? `<section class="card flat"><div class="list">${r.payments.map(x => { const st = PAY_ST[x.status] || ['plain', x.status]; return `<div class="li"><span class="li-main"><span class="li-t">${esc(x.title)}</span><br><span class="li-s">${T.stamp(x.ts)}, ${esc(x.login)}${x.error ? ', ' + esc(x.error) : ''}</span></span><span style="text-align:right"><b>${money(x.amount)}</b><br><span class="chip ${st[0]}">${st[1]}</span></span></div>`; }).join('')}</div></section>` : '<p class="muted small">Онлайн-платежей пока не было.</p>'));
 }

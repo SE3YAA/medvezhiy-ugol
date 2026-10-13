@@ -243,6 +243,8 @@
 
     // ---------- Вход и выход ----------
     status() { return rpc('mu_status', { p_property: DB.pid() }).catch(() => ({ ok: false })); },
+    // Вызов без входа: только объект сети (например, подключена ли онлайн-оплата)
+    pub(fn, args) { return rpc(fn, Object.assign({ p_property: DB.pid() }, args || {})).catch(() => ({ ok: false })); },
     // fn — mu_login, mu_register, mu_setup, mu_visitor, mu_qr или mu_join. Возвращает { ok, user } или { ok: false, error }
     async signIn(fn, args) {
       let res;

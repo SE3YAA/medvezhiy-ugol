@@ -368,6 +368,7 @@ const canTick = u => u && (!SRV() || u.role !== 'guest');
 
 function launch(user) {
   S.user = user; if (canTick(user)) DB.tick();
+  if (SRV()) { SYNC.pub('mu_pay_ready').then(r => { S.payReady = !!(r && r.ready); }); setTimeout(payPendingCheck, 1500); }
   $('#auth').hidden = true; $('#auth').innerHTML = ''; $('#app').hidden = false;
   go(NAV[user.role][0][0]);
 }
@@ -427,9 +428,11 @@ function notesSheet() {
 
 // Демо-оплата: СБП или карта, бонусы, сертификат. Деньги не списываются, пока не подключён эквайринг
 let payCtx = null;
+// Онлайн-оплата подключена (payments.sql и ключи терминала): платёж идёт через страницу Т-Банка
+const payOnline = () => SRV() && SYNC.signedIn && S.payReady;
 function paySheet(o) {
   // o: { title, amount, onPaid(method, info), folioId, allowBonus }
-  payCtx = Object.assign({ method: 'СБП', bonus: 0, cert: 0, certCode: '' }, o);
+  payCtx = Object.assign({ method: payOnline() ? 'Онлайн' : 'СБП', bonus: 0, cert: 0, certCode: '' }, o);
   renderPay();
 }
 function renderPay() {
@@ -438,12 +441,12 @@ function renderPay() {
   const stay = p.folioId != null;
   sheet(sheetHead('Оплата', esc(p.title)) + `
     <div class="total"><span class="muted">К оплате</span><b>${money(due)}</b></div>
-    <div class="seg in">${[['СБП', 'СБП'], ['Карта', 'Картой']].concat(stay ? [['В счёт проживания', 'В счёт дома']] : []).map(([k, l]) => `<button class="${p.method === k ? 'on' : ''}" onclick="payCtx.method='${k}';renderPay()">${l}</button>`).join('')}</div>
+    <div class="seg in">${(payOnline() ? [['Онлайн', 'Картой или СБП']] : [['СБП', 'СБП'], ['Карта', 'Картой']]).concat(stay ? [['В счёт проживания', 'В счёт дома']] : []).map(([k, l]) => `<button class="${p.method === k ? 'on' : ''}" onclick="payCtx.method='${k}';renderPay()">${l}</button>`).join('')}</div>
     ${p.method === 'В счёт проживания' ? '<p class="small muted">Сумма добавится в общий счёт дома, оплатите всё разом при выезде.</p>' : ''}
     ${bonusMax > 0 && p.method !== 'В счёт проживания' ? `<label class="check"><input type="checkbox" ${p.bonus ? 'checked' : ''} onchange="payCtx.bonus=this.checked?${bonusMax}:0;renderPay()"><span>Списать ${money(bonusMax)} бонусами <span class="muted small">(есть ${money(u.bonus)}, можно до 30% суммы)</span></span></label>` : ''}
     ${p.method !== 'В счёт проживания' ? `<div class="composer"><input id="pay-cert" class="inp" placeholder="Код сертификата" value="${esc(p.certCode)}" aria-label="Код сертификата"><button class="btn sm ghost" style="min-height:46px" onclick="applyCert()">Применить</button></div>${p.cert ? `<p class="small" style="color:var(--ok)">Сертификат: −${money(p.cert)}</p>` : ''}` : ''}
     <button class="btn block" id="pay-go" onclick="doPay()">${p.method === 'В счёт проживания' ? 'Добавить в счёт' : due ? `Оплатить ${money(due)}` : 'Подтвердить'}</button>
-    <p class="small muted" style="text-align:center">Демо-режим: деньги не списываются. После подключения эквайринга здесь откроется страница банка, а чек придёт на телефон.</p>`);
+    <p class="small muted" style="text-align:center">${payOnline() ? 'Оплата на защищённой странице Т-Банка. Данные карты приложение не видит.' : 'Демо-режим: деньги не списываются. После подключения эквайринга здесь откроется страница банка, а чек придёт на телефон.'}</p>`);
 }
 async function applyCert() {
   // С общей базой код проверяет сервер: чужие сертификаты телефону не видны
@@ -453,6 +456,15 @@ async function applyCert() {
 }
 async function doPay() {
   const p = payCtx, btn = $('#pay-go');
+  const due = Math.max(0, p.amount - p.bonus - p.cert);
+  if (p.method === 'Онлайн' && payOnline() && due > 0) {
+    btn.disabled = true; btn.textContent = 'Создаём платёж…';
+    const r = await SYNC.call('mu_pay_init', { p_amount: due, p_title: p.title, p_contact: S.user.phone || '' });
+    if (!r.ok) { btn.disabled = false; renderPay(); return toast(r.error); }
+    try { localStorage.setItem('mu_pay_pending', JSON.stringify({ order: r.order, title: p.title, amount: due, login: S.user.login })); } catch (e) { /* без памяти обойдёмся */ }
+    S.payOrder = r.order; S.payUrl = r.url; S.payStarted = Date.now();
+    return payWait();
+  }
   if (p.method !== 'В счёт проживания') { btn.disabled = true; btn.textContent = 'Связываемся с банком…'; await new Promise(r => setTimeout(r, 900)); }
   if (p.bonus) DB.updateUser(S.user.login, { bonus: (S.user.bonus || 0) - p.bonus });
   if (p.cert && SRV()) {
@@ -464,6 +476,61 @@ async function doPay() {
   closeSheet();
   p.onPaid(p.method, info);
 }
+// Ждём, пока банк подтвердит оплату. Заказ оформляется только после ответа банка «оплачено»
+function payWait(msg) {
+  const p = payCtx, due = Math.max(0, p.amount - p.bonus - p.cert);
+  sheet(sheetHead('Оплата', esc(p.title)) + `
+    <div class="total"><span class="muted">К оплате</span><b>${money(due)}</b></div>
+    <a class="btn block" href="${esc(S.payUrl)}" target="_blank" rel="noopener">${ic('wallet', 'sm')} Перейти к оплате</a>
+    <p class="small muted" id="pay-st" style="text-align:center">${esc(msg || 'Откроется страница Т-Банка. Оплатите картой или по СБП и вернитесь сюда: заказ оформится сам.')}</p>
+    <button class="btn block ghost" onclick="payPoll(true)">Я оплатил, проверить</button>
+    <button class="btn block line" onclick="payCancel()">Отменить</button>`);
+  clearTimeout(S.payTimer); S.payTimer = setTimeout(() => payPoll(false), 3000);
+}
+async function payPoll(manual) {
+  clearTimeout(S.payTimer);
+  const order = S.payOrder; if (!order) return;
+  const r = await SYNC.call('mu_pay_status', { p_order: order });
+  if (S.payOrder !== order) return;
+  if (r.ok && r.paid) return payDone(order);
+  if (r.ok && r.failed) { S.payOrder = null; payForget(); if ($('#pay-st')) { closeSheet(); toast('Оплата не прошла. Попробуйте ещё раз или другой картой'); } return; }
+  if (manual) toast(r.ok ? 'Банк ещё не подтвердил оплату. Подождите минуту' : r.error);
+  if (Date.now() - S.payStarted < 20 * 60000 && $('#pay-st')) S.payTimer = setTimeout(() => payPoll(false), 3000);
+}
+function payCancel() { clearTimeout(S.payTimer); S.payOrder = null; payForget(); closeSheet(); toast('Оплата отменена'); }
+function payForget() { try { localStorage.removeItem('mu_pay_pending'); } catch (e) { /* нет памяти */ } }
+async function payDone(order) {
+  const p = payCtx; S.payOrder = null; payForget();
+  if (p.bonus) DB.updateUser(S.user.login, { bonus: (S.user.bonus || 0) - p.bonus });
+  if (p.cert) { const c = await SYNC.call('mu_cert', { p_code: p.certCode, p_amount: p.cert }); p.cert = c.ok ? c.taken : 0; }
+  const info = { paid: p.amount - p.bonus - p.cert, bonus: p.bonus, cert: p.cert, payId: order };
+  closeSheet();
+  DB.curPay = order;
+  try { p.onPaid('Онлайн', info); } finally { DB.curPay = null; }
+  DB.save();
+  toast('Оплата прошла, спасибо!');
+}
+// Оплатил, но приложение закрылось раньше, чем банк ответил: сообщаем управляющему, чтобы заказ оформили вручную
+async function payPendingCheck() {
+  let pend = null; try { pend = JSON.parse(localStorage.getItem('mu_pay_pending')); } catch (e) { pend = null; }
+  if (!pend || !S.user || pend.login !== S.user.login || S.payOrder === pend.order) return;
+  const r = await SYNC.call('mu_pay_status', { p_order: pend.order });
+  if (!r.ok) return;
+  if (r.paid) {
+    payForget();
+    DB.notify('admin', `Онлайн-оплата ${money(pend.amount)} от ${S.user.name} прошла, но заказ «${pend.title}» не оформился: приложение закрыли раньше. Оформите вручную`, 'wallet', 'cash');
+    DB.save();
+    ask('Оплата получена', `Мы получили ${money(pend.amount)} за «${pend.title}», но заказ не успел оформиться. Администратор уже знает и всё оформит, ничего делать не нужно.`, 'Понятно', () => {});
+  } else if (r.failed) payForget();
+}
+// Возврат со страницы банка в браузере, где не выполнен вход (на iPhone приложение и Safari живут отдельно)
+function renderPayReturn(ok) {
+  $('#app').hidden = true; $('#auth').hidden = false;
+  $('#auth').innerHTML = `<div class="auth-bg">${scene('base', 3)}</div><div class="auth-in"><div><div class="brand">${ok ? 'Оплата прошла' : 'Оплата не прошла'}</div>
+    <p class="brand-sub">${ok ? 'Вернитесь в приложение «Медвежий угол»: заказ оформится сам через несколько секунд. Эту вкладку можно закрыть.' : 'Деньги не списаны. Вернитесь в приложение и попробуйте ещё раз или выберите другую карту.'}</p></div>
+    <button class="btn block" onclick="history.replaceState(null,'',location.pathname);route()">Открыть приложение здесь</button></div>`;
+}
+
 // Электронный чек. Реквизиты кассы появятся после подключения онлайн-кассы (54-ФЗ)
 function receiptSheet(txId) {
   const x = DB.d.tx.find(t => t.id === txId); if (!x) return;
@@ -583,6 +650,12 @@ if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigato
 // Куда вести после загрузки: QR со стола, приглашение в компанию, ссылка друга, отметка смены
 async function route() {
   const h = location.hash;
+  const payRet = /^#pay(ok|fail)/.exec(h);
+  if (payRet) {
+    if (history.replaceState) history.replaceState(null, '', location.pathname + location.search);
+    if (!(SRV() && SYNC.signedIn && DB.me())) return renderPayReturn(payRet[1] === 'ok');
+    S.flash = payRet[1] === 'ok' ? 'Оплата прошла. Проверяем у банка…' : 'Оплата не прошла';
+  }
   let user = DB.me();
   if (SRV() && !SYNC.signedIn) user = null;
   const qr = /^#qr-([a-z0-9]+)(?:-([a-f0-9]+))?$/i.exec(h);  // QR на столе в доме или беседке: …#qr-h1-<ключ>
