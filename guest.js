@@ -450,6 +450,7 @@ V.g_me = () => {
     <button class="li" onclick="corpSheet(true)"><span class="li-ic">${ic('users')}</span><span class="li-main"><span class="li-t">Корпоратив или праздник</span><br><span class="li-s">Посчитаем смету за минуту</span></span>${ic('right', 'sm')}</button>
     <button class="li" onclick="certBuySheet()"><span class="li-ic">${ic('gift')}</span><span class="li-main"><span class="li-t">Подарить сертификат</span><br><span class="li-s">На дом, баню и любые услуги</span></span>${ic('right', 'sm')}</button>
   </div></section>
+  ${notifCard()}
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
   ${SRV() && !S.user.visitor && !S.user.qr && !S.user.groupOf ? `<button class="btn block ghost" onclick="passSheet()">${ic('lock', 'sm')} Сменить пароль</button>` : ''}
   <button class="btn block line" onclick="logout()">${ic('logout', 'sm')} Выйти</button>`;

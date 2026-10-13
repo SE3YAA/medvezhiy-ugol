@@ -360,7 +360,8 @@ function browseVisitor() {
 }
 function logout(force) {
   if (SRV() && !force && PH.count()) return ask('Не все фото отправлены', `${PH.count()} фото ещё на телефоне: не было связи. Если выйти сейчас, они пропадут.`, 'Выйти всё равно', () => logout(true), true);
-  if (SRV()) SYNC.signOut(); else DB.logout();   // с общей базой с телефона стираются и данные
+  // уведомления этого человека на этот телефон больше не приходят; данные стираются после отписки
+  if (SRV()) NOTIF.off().finally(() => SYNC.signOut()); else DB.logout();   // с общей базой с телефона стираются и данные
   S.user = null; S.cart = {}; S.qrKeys = null; closeSheet(); renderAuth(); window.scrollTo(0, 0);
 }
 // Гостю с общей базой ночные проверки не нужны: брони закрывает и уборки ставит телефон персонала
@@ -368,7 +369,7 @@ const canTick = u => u && (!SRV() || u.role !== 'guest');
 
 function launch(user) {
   S.user = user; if (canTick(user)) DB.tick();
-  if (SRV()) { SYNC.pub('mu_pay_ready').then(r => { S.payReady = !!(r && r.ready); }); setTimeout(payPendingCheck, 1500); }
+  if (SRV()) { SYNC.pub('mu_pay_ready').then(r => { S.payReady = !!(r && r.ready); }); setTimeout(payPendingCheck, 1500); NOTIF.refresh(); }
   $('#auth').hidden = true; $('#auth').innerHTML = ''; $('#app').hidden = false;
   go(NAV[user.role][0][0]);
 }
@@ -388,6 +389,7 @@ function render() {
   const keep = S.shown === S.tab + S.chess, sx = keep && $('#chess-scroll, #tl-scroll') ? $('#chess-scroll, #tl-scroll').scrollLeft : null;
   $('#view').innerHTML = PH.fix(V[S.tab]());
   PH.hydrate($('#view'));
+  if ($('#nf-card')) renderNotif();
   S.shown = S.tab + S.chess;
   const sc = $('#chess-scroll, #tl-scroll');
   if (sc) {
@@ -673,8 +675,40 @@ async function route() {
   // QR на воротах для персонала: …#checkin отмечает приход на смену
   if (h === '#checkin' && user && user.role !== 'guest' && !DB.onShift(user.login)) { DB.checkIn(user.login); S.flash = 'Приход на смену отмечен'; }
   if (user) launch(user); else renderAuth();
+  // Открыли из уведомления: …#go-chess ведёт сразу на нужный экран
+  const goTo = /^#go-([a-z_]+)$/i.exec(h);
+  if (goTo && user) { if (history.replaceState) history.replaceState(null, '', location.pathname + location.search); go(goTo[1]); }
   if (S.flash) { toast(S.flash); S.flash = ''; }
 }
+
+// ---------- Уведомления на телефон: карточка в настройках и профилях ----------
+const notifCard = () => SRV() ? `<div class="sec"><span class="h2">Уведомления на телефон</span></div><section class="card" id="nf-card"><span class="small muted">Проверяем…</span></section>` : '';
+async function renderNotif() {
+  const el = $('#nf-card'); if (!el) return;
+  const st = await NOTIF.state(), box = $('#nf-card'); if (!box) return;
+  const text = {
+    install: 'На айфоне уведомления работают, когда приложение стоит на экране «Домой»: в Safari нажмите «Поделиться» → «На экран „Домой“», откройте приложение оттуда и включите уведомления здесь.',
+    unsupported: 'Этот браузер не умеет показывать уведомления. Откройте приложение в Safari на айфоне или в Chrome на Android.',
+    denied: 'Уведомления запрещены в настройках телефона. Разрешите их: Настройки → Уведомления → Медвежий угол, и вернитесь сюда.',
+    off: S.user.role === 'guest' ? 'Сообщим, когда баня растоплена, заказ доставлен или ответил администратор.' : S.user.role === 'admin' ? 'Новые брони, SOS, недовольные отзывы и «кончается на складе» придут, даже когда приложение закрыто.' : 'Новые задачи, выезды и SOS придут, даже когда приложение закрыто.',
+    on: 'Включены на этом телефоне.'
+  }[st];
+  box.innerHTML = `<div class="card-h"><span class="small${st === 'on' ? '' : ' muted'}">${text}</span>${st === 'on' ? '<span class="chip ok">вкл.</span>' : ''}</div>
+    ${st === 'off' ? `<button class="btn sm" id="nf-go" onclick="notifOn()">${ic('bell', 'sm')} Включить уведомления</button>` : ''}
+    ${st === 'on' ? `<div class="btns"><button class="btn sm ghost" onclick="notifTest()">Проверить</button><button class="btn sm ghost" onclick="notifOff()">Выключить</button></div>` : ''}`;
+}
+async function notifOn() {
+  const b = $('#nf-go'); if (b) { b.disabled = true; b.textContent = 'Секунду…'; }
+  const r = await NOTIF.on();
+  if (r.ok) toast('Уведомления включены'); else if (r.error) toast(r.error);
+  renderNotif();
+}
+async function notifOff() { await NOTIF.off(); toast('Уведомления выключены'); renderNotif(); }
+function notifTest() { DB.notify(S.user.login, 'Проверка: уведомления работают', 'bell'); DB.save(); toast('Отправили. Уведомление придёт через несколько секунд'); }
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => {
+  const m = e.data && e.data.type === 'open' && /#go-([a-z_]+)/i.exec(e.data.url || '');
+  if (m && S.user) go(m[1]);
+});
 
 // Данные с сервера изменились: обновляем экран, но не мешаем, если открыта форма
 function onRemoteChange() {
