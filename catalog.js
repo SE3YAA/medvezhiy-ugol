@@ -20,7 +20,7 @@ const CAT = {
   pointRate: 25, // рублей за один балл в сдельной части
   wifi: { net: 'Medvezhiy_Corner', pass: 'taiga2026' },
   adminPhone: '+7 (999) 000-01-01',
-  checkIn: '14:00', checkOut: '12:00',
+  checkIn: '15:00', checkOut: '12:00',
 
   // Чек-листы. photo: true — без контрольного фото шаг не закрыть.
   standards: {

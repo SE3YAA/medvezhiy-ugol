@@ -72,7 +72,7 @@
 
     const d = {
       pid, created: Date.now(),
-      settings: { taxRate: 2, weekendK: 1.2, holidayK: 1.4, holidays: hol, minNightsHoliday: 2, hotDays: 4, hotPct: 15, earlyFee: 1500, lateFee: 1500, deposit: 5000, bonusPct: 5, refPct: 10, refBonus: 500, shiftPay: 2200, weatherStop: false, winter: true },
+      settings: { taxRate: 2, weekendK: 1.2, holidayK: 1.4, holidays: hol, minNightsHoliday: 2, hotDays: 4, hotPct: 15, earlyFee: 2000, lateFee: 2000, deposit: 5000, bonusPct: 5, refPct: 10, refBonus: 500, shiftPay: 2200, weatherStop: false, winter: true },
       users: [
         { login: 'admin', pass: 'admin', name: 'Отец', role: 'admin', title: 'Управляющий', phone: '+7 (999) 000-01-01', points: 0 },
         { login: 'elena', pass: '123', name: 'Елена', role: 'staff', title: 'Горничная', phone: '+7 (999) 111-22-33', points: 86, clean: 7, trained: true },
@@ -557,6 +557,8 @@
     folio(stayId) { return this.d.tx.filter(x => x.folio === stayId && x.paid === false); },
     settleFolio(stayId, method) {
       this.folio(stayId).forEach(x => { x.paid = true; x.method = method; x.receipt = this.id() % 1000000; if (this.curPay) x.payId = this.curPay; });
+      const b = this.d.bookings.find(x => x.id === stayId);
+      if (b && b.prepaid && !b.paid) b.paid = true;   // после предоплаты остаток оплачен — бронь оплачена целиком
       this.save();
     },
 
@@ -751,7 +753,7 @@
       const r = this.addStay({ unitId: w.unitId, guest: w.name, login: w.login, phone: w.phone, guests: w.guests, start: w.start, end: w.end, source: 'Приложение', promo: w.promo, method: 'Не оплачено' });
       if (!r.ok) return r;
       w.status = 'ok'; w.bookingId = r.booking.id;
-      this.notify(w.login, `Даты подтверждены: ${this.unit(w.unitId).short}, ${T.dm(w.start)} – ${T.dm(w.end)}. Оплатите бронь во вкладке «Брони»`, 'check', 'g_book');
+      this.notify(w.login, `Даты подтверждены: ${this.unit(w.unitId).short}, ${T.dm(w.start)} – ${T.dm(w.end)}. Внесите предоплату ${this.prepayPct()}% во вкладке «Брони»`, 'check', 'g_book');
       this.save();
       return r;
     },
@@ -762,11 +764,26 @@
       this.notify(w.login, `К сожалению, ${this.unit(w.unitId).short} на ${T.dm(w.start)} – ${T.dm(w.end)} уже занят. Выберите другие даты или другой дом`, 'calendar', 'g_book');
       this.save();
     },
-    // Оплата подтверждённой брони (после заявки)
-    payStay(id, method) {
+    // Предоплата при брони (по умолчанию 30%), остаток — при заезде через общий счёт дома
+    prepayPct() { return this.S.prepayPct != null ? this.S.prepayPct : 30; },
+    prepayOf(amount) { return Math.round((Number(amount) || 0) * this.prepayPct() / 100); },
+    // Оплата подтверждённой брони. prepay: внести только предоплату, остаток уйдёт в общий счёт дома
+    payStay(id, method, prepay) {
       const b = this.d.bookings.find(x => x.id === id);
-      if (!b || b.paid) return;
+      if (!b || b.paid || (prepay && b.prepaid)) return;
       const u = this.unit(b.unitId);
+      if (prepay && this.prepayPct() < 100) {
+        const pre = Math.min(this.prepayOf(b.amount), b.base || b.amount || 0);
+        b.prepaid = pre;
+        this.addTx({ type: 'in', amount: pre, cat: 'stay', title: `Предоплата ${this.prepayPct()}%, ${b.guest}, ${u.short}`, method, bookingId: b.id }, true);
+        if ((b.base || 0) - pre > 0) this.addTx({ type: 'in', amount: b.base - pre, cat: 'stay', title: `Остаток за проживание, ${u.short}`, method: 'В счёт проживания', folio: b.id, paid: false }, true);
+        if (b.tax) this.addTx({ type: 'in', amount: b.tax, cat: 'tax', title: `Туристический налог, ${b.guest}`, method: 'В счёт проживания', folio: b.id, paid: false }, true);
+        const g = this.user(b.login);
+        if (g && g.role === 'guest') g.bonus = (g.bonus || 0) + Math.round((b.base || 0) * this.S.bonusPct / 100);
+        this.notify('admin', `Предоплата внесена: ${b.guest}, ${u.short}, ${T.dm(b.start)} – ${T.dm(b.end)}, ${pre.toLocaleString('ru-RU')} ₽. Остаток ${((b.amount || 0) - pre).toLocaleString('ru-RU')} ₽ — при заезде`, 'wallet', 'chess');
+        this.save();
+        return;
+      }
       b.paid = true;
       if (b.base > 0) this.addTx({ type: 'in', amount: b.base, cat: 'stay', title: `${b.guest}, ${u.short}`, method, bookingId: b.id }, true);
       if (b.tax) this.addTx({ type: 'in', amount: b.tax, cat: 'tax', title: `Туристический налог, ${b.guest}`, method, bookingId: b.id }, true);

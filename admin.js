@@ -221,7 +221,7 @@ function reqConfirm(id) {
   const r = DB.confirmRequest(id);
   if (!r.ok) return toast(r.msg);
   render();
-  ask('Бронь подтверждена', 'Если ещё не поставили её в менеджере каналов, сделайте это сейчас на те же даты: тогда они закроются на всех площадках, а приложение само свяжет брони.', 'Понятно', () => {});
+  ask('Бронь подтверждена', `Гостю пришло уведомление внести предоплату ${DB.prepayPct()}%. Если ещё не поставили бронь в менеджере каналов, сделайте это сейчас на те же даты: тогда они закроются на всех площадках, а приложение само свяжет брони.`, 'Понятно', () => {});
 }
 function reqReject(id) { ask('Отклонить заявку?', 'Гостю придёт уведомление, что даты заняты.', 'Отклонить', () => { DB.rejectRequest(id); render(); toast('Заявка отклонена'); }, true); }
 function clashSheet(unitId, ds) {
@@ -234,7 +234,7 @@ function bookingSheet(id) {
   const b = DB.d.bookings.find(x => x.id === id); if (!b) return;
   const u = DB.unit(b.unitId);
   const when = b.start ? `${T.dm(b.start)} – ${T.dm(b.end)}, ${plural(T.nights(b.start, b.end), 'ночь', 'ночи', 'ночей')}` : `${T.rel(b.date)}, ${T.hm(b.from)}–${T.hm(b.to)}`;
-  const rows = [['Объект', u.name], ['Когда', when], b.guests ? ['Гостей', b.guests] : null, ['Откуда', b.source || 'Прямая'], ['Сумма', money(b.amount)], b.tax ? ['В том числе налог', money(b.tax)] : null, b.start ? ['Код на дверь', DB.doorCode(b)] : null,
+  const rows = [['Объект', u.name], ['Когда', when], b.guests ? ['Гостей', b.guests] : null, ['Откуда', b.source || 'Прямая'], ['Сумма', money(b.amount)], b.prepaid ? ['Предоплата', money(b.prepaid)] : null, b.tax ? ['В том числе налог', money(b.tax)] : null, b.start ? ['Код на дверь', DB.doorCode(b)] : null,
     b.start ? ['Онлайн-регистрация', b.checkin ? `пройдена, приедет к ${b.checkin.arrive}${b.checkin.car ? ', авто ' + b.checkin.car : ''}` : 'не пройдена'] : null, b.early ? ['Ранний заезд', 'с 10:00'] : null, b.late ? ['Поздний выезд', 'до 16:00'] : null,
     b.group && b.group.members.length > 1 ? ['В компании', plural(b.group.members.length, 'человек', 'человека', 'человек')] : null,
     b.ext ? ['Менеджер каналов', `бронь №${b.ext.id || '—'}${b.ext.lot ? ', лот ' + b.ext.lot : ''}`] : null].filter(Boolean);

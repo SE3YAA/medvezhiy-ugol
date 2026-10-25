@@ -370,7 +370,7 @@ V.g_book = () => {
   const reqs = d.waitlist.filter(w => w.req && w.login === u.login && w.status !== 'ok' && w.end >= t);
   return head('Ваши поездки и свободные дома', 'Брони') +
   (reqs.length ? `<section class="card flat"><div class="list">${reqs.map(w => { const un = DB.unit(w.unitId); return `<div class="li"><span class="thumb">${unitScene(un)}</span><span class="li-main"><span class="li-t">${esc(un.name)}</span><br><span class="li-s">${T.dm(w.start)} – ${T.dm(w.end)}, ${w.status === 'no' ? 'эти даты уже заняты' : 'администратор проверяет даты'}</span></span><span class="chip ${w.status === 'no' ? 'bad' : 'warn'}">${w.status === 'no' ? 'Занято' : 'Заявка'}</span></div>`; }).join('')}</div></section>` : '') +
-  (mine.length ? `<section class="card flat"><div class="list">${mine.map(b => { const un = DB.unit(b.unitId), done = b.end < t || b.closed, due = !done && !b.paid && b.amount > 0; return `<div class="li"><span class="thumb">${unitScene(un)}</span><span class="li-main"><span class="li-t">${esc(un.name)}</span><br><span class="li-s">${T.dm(b.start)} – ${T.dm(b.end)}, ${money(b.amount)}</span></span>${due ? `<button class="btn sm" onclick="gPayStay(${b.id})">Оплатить</button>` : `<span class="chip ${done ? '' : 'ok'}">${done ? 'Прошла' : b.paid ? 'Оплачена' : 'Подтверждена'}</span>`}</div>`; }).join('')}</div></section>` : '') +
+  (mine.length ? `<section class="card flat"><div class="list">${mine.map(b => { const un = DB.unit(b.unitId), done = b.end < t || b.closed, due = !done && !b.paid && b.amount > 0; return `<div class="li"><span class="thumb">${unitScene(un)}</span><span class="li-main"><span class="li-t">${esc(un.name)}</span><br><span class="li-s">${T.dm(b.start)} – ${T.dm(b.end)}, ${money(b.amount)}</span></span>${due && !b.prepaid ? `<button class="btn sm" onclick="gPayStay(${b.id})">Предоплата ${money(DB.prepayOf(b.amount))}</button>` : `<span class="chip ${done ? '' : 'ok'}">${done ? 'Прошла' : b.paid ? 'Оплачена' : b.prepaid ? 'Предоплата внесена' : 'Подтверждена'}</span>`}</div>`; }).join('')}</div></section>` : '') +
   (waits.length ? `<section class="card"><span class="h2">Лист ожидания</span>${waits.map(w => `<span class="small">${esc(DB.unit(w.unitId).short)}, ${T.dm(w.start)} – ${T.dm(w.end)}${w.offered ? '. <b style="color:var(--ok)">Освободилось, бронируйте!</b>' : '. Сообщим, если освободится'}</span>`).join('')}</section>` : '') + `
   <div class="sec"><span class="h2">Дома</span><span class="small muted">выходные дороже, будни рядом дешевле</span></div>` +
   d.units.filter(x => x.kind === 'house').map(x => { const from = Math.min(...Array.from({ length: 14 }, (_, i) => DB.nightPrice(x, T.addDays(t, i)).price)); return `<section class="hero wide"><div class="hero-img">${unitScene(x)}</div><div class="hero-in"><div class="hero-row"><span class="glass">от <b>${money(from)}</b> за ночь</span><span class="glass">${ic('users', 'sm')} до ${x.capacity}</span></div>
@@ -391,9 +391,9 @@ function gStaySheet(unitId) {
     <div class="row2">${field('Заезд', `<input id="gb-start" class="inp" type="date" min="${t}" value="${T.addDays(t, 1)}" onchange="gCalc()">`)}${field('Выезд', `<input id="gb-end" class="inp" type="date" min="${t}" value="${T.addDays(t, 3)}" onchange="gCalc()">`)}</div>
     <div class="row2">${field('Гостей', `<input id="gb-count" class="inp" type="number" min="1" max="${u.capacity}" value="2">`)}${field('Промокод', `<input id="gb-promo" class="inp" placeholder="Если есть" onchange="gCalc()">`)}</div>
     <div class="card flat" id="gb-sum"></div>
-    <button class="btn block" id="gb-go" onclick="gBook()">${DB.S.stayRequests ? 'Отправить заявку' : 'Оплатить и забронировать'}</button>
+    <button class="btn block" id="gb-go" onclick="gBook()">${DB.S.stayRequests ? 'Отправить заявку' : `Внести предоплату ${DB.prepayPct()}% и забронировать`}</button>
     <button class="btn block ghost" id="gb-wait" hidden onclick="gWait()">Встать в лист ожидания</button>
-    <p class="small muted" style="text-align:center">${DB.S.stayRequests ? 'Администратор проверит даты и подтвердит бронь, после этого её можно оплатить. ' : ''}Заезд с ${CAT.checkIn}, выезд до ${CAT.checkOut}. Бесплатная отмена за 7 дней до заезда.</p></div>`);
+    <p class="small muted" style="text-align:center">${DB.S.stayRequests ? 'Администратор проверит даты и подтвердит бронь, после этого можно внести предоплату. ' : ''}Предоплата ${DB.prepayPct()}%, остаток при заезде. Заезд с ${CAT.checkIn}, выезд до ${CAT.checkOut}. Бесплатная отмена за 3 дня до заезда. <a class="link" href="https://se3yaa.github.io/medv-ugol48/oplata.html" target="_blank" rel="noopener">Условия</a></p></div>`);
   gCalc();
 }
 function gCalc() {
@@ -403,7 +403,8 @@ function gCalc() {
   $('#gb-sum').innerHTML = q.nights.length ? `<div class="list">${Object.entries(groups).map(([k, c]) => { const [p, tag] = k.split('|'); return `<div class="li"><span class="li-main small">${plural(c, 'ночь', 'ночи', 'ночей')} × ${money(p)}${tag ? `, ${tag}` : ''}</span><b>${money(p * c)}</b></div>`; }).join('')}
     ${q.discount ? `<div class="li"><span class="li-main small" style="color:var(--ok)">${esc(q.promo.label)}, −${q.promo.pct}%</span><b style="color:var(--ok)">−${money(q.discount)}</b></div>` : ''}
     <div class="li"><span class="li-main small">Туристический налог ${DB.S.taxRate}%</span><b>${money(q.tax)}</b></div>
-    <div class="li"><span class="li-main"><b>Итого</b>${q.ok ? '' : `<br><span class="small" style="color:var(--bad)">${esc(q.msg)}</span>`}</span><b class="num" style="font-size:20px">${money(q.total)}</b></div></div>` : `<p class="small" style="color:var(--bad);padding:12px 0">${esc(q.msg)}</p>`;
+    <div class="li"><span class="li-main"><b>Итого</b>${q.ok ? '' : `<br><span class="small" style="color:var(--bad)">${esc(q.msg)}</span>`}</span><b class="num" style="font-size:20px">${money(q.total)}</b></div>
+    <div class="li"><span class="li-main small">Предоплата ${DB.prepayPct()}% при брони, остаток при заезде</span><b>${money(DB.prepayOf(q.total))}</b></div></div>` : `<p class="small" style="color:var(--bad);padding:12px 0">${esc(q.msg)}</p>`;
   $('#gb-go').disabled = !q.ok;
   $('#gb-wait').hidden = q.ok || !q.nights.length || DB.dayFree(u.id, s, e);
   return q;
@@ -417,21 +418,22 @@ function gBook() {
     DB.addRequest({ unitId: u.id, start: s, end: e, guests, promo, amount: q.total, login: S.user.login, name: S.user.name, phone: S.user.phone });
     closeSheet(); go('g_book'); toast('Заявка отправлена. Как только администратор подтвердит даты, придёт уведомление');
   });
-  needContact(() => paySheet({ title: `${u.short}, ${T.dm(s)} – ${T.dm(e)}`, amount: q.total, onPaid: (m) => {
-    const r = DB.addStay({ unitId: u.id, guest: S.user.name, login: S.user.login, phone: S.user.phone, guests, start: s, end: e, source: 'Приложение', promo, method: m === 'СБП' ? 'Перевод' : 'Карта' });
+  needContact(() => paySheet({ title: `Предоплата ${DB.prepayPct()}%: ${u.short}, ${T.dm(s)} – ${T.dm(e)}`, amount: DB.prepayOf(q.total), onPaid: (m) => {
+    const r = DB.addStay({ unitId: u.id, guest: S.user.name, login: S.user.login, phone: S.user.phone, guests, start: s, end: e, source: 'Приложение', promo, method: 'Не оплачено' });
+    if (r.ok) DB.payStay(r.booking.id, m === 'СБП' ? 'Перевод' : 'Карта', true);
     if (!r.ok) {
       if (DB.curPay) { DB.notify('admin', `Гость ${S.user.name} оплатил онлайн ${u.short} на ${T.dm(s)} – ${T.dm(e)}, но даты успели занять. Верните деньги или предложите другой дом`, 'alert', 'cash'); return ask('Даты успели занять', 'Пока шла оплата, этот дом забронировали. Деньги не пропадут: администратор свяжется с вами, вернёт оплату или предложит другой дом.', 'Понятно', () => {}); }
       return toast(r.msg);
     }
-    go('g_home'); toast(`Дом за вами. Начислено ${money(Math.round(r.booking.base * DB.S.bonusPct / 100))} бонусов`);
+    go('g_home'); toast(`Дом за вами. Остаток ${money(r.booking.amount - (r.booking.prepaid || 0))} — при заезде`);
   } }));
 }
 function gPayStay(id) {
   const b = DB.d.bookings.find(x => x.id === id); if (!b || b.paid) return;
   const u = DB.unit(b.unitId);
-  paySheet({ title: `${u.short}, ${T.dm(b.start)} – ${T.dm(b.end)}`, amount: b.amount, onPaid: (m) => {
-    DB.payStay(id, m === 'СБП' ? 'Перевод' : 'Карта');
-    render(); toast(`Бронь оплачена. Начислено ${money(Math.round((b.base || 0) * DB.S.bonusPct / 100))} бонусов`);
+  paySheet({ title: `Предоплата ${DB.prepayPct()}%: ${u.short}, ${T.dm(b.start)} – ${T.dm(b.end)}`, amount: DB.prepayOf(b.amount), onPaid: (m) => {
+    DB.payStay(id, m === 'СБП' ? 'Перевод' : 'Карта', true);
+    render(); toast(`Предоплата внесена. Остаток ${money(b.amount - (b.prepaid || 0))} — при заезде`);
   } });
 }
 function gWait() {
