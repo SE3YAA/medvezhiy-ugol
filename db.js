@@ -485,7 +485,7 @@
       this.d.tx = this.d.tx.filter(x => x.bookingId !== id);
       this.d.tasks = this.d.tasks.filter(x => !(x.bookingId === id && x.status !== 'done'));
       // Освободились даты — первым узнаёт тот, кто стоял в листе ожидания
-      if (b && b.start) this.d.waitlist.filter(w => w.unitId === b.unitId && overlap(w.start, w.end, b.start, b.end) && this.dayFree(w.unitId, w.start, w.end)).forEach(w => {
+      if (b && b.start) this.d.waitlist.filter(w => !w.req && w.unitId === b.unitId && overlap(w.start, w.end, b.start, b.end) && this.dayFree(w.unitId, w.start, w.end)).forEach(w => {
         w.offered = Date.now();
         this.notify(w.login, `Освободился ${this.unit(w.unitId).short} на ${T.dm(w.start)} – ${T.dm(w.end)}. Успейте забронировать`, 'calendar', 'g_book');
       });
@@ -732,6 +732,48 @@
       this.d.lost.unshift(n);
       if (n.guestLogin) this.notify(n.guestLogin, `Вы забыли у нас: ${n.title}. Напишите в чат, как удобнее вернуть`, 'bag', 'g_chat');
       this.save(); return n;
+    },
+    // --- Заявки на бронь из приложения ---
+    // Пока менеджер каналов не умеет принимать брони от приложения, гость не бронирует дом мгновенно, а отправляет заявку.
+    // Управляющий ставит бронь в менеджере каналов (даты закрываются на всех площадках) и подтверждает заявку здесь.
+    // Заявки хранятся в листе ожидания с пометкой req: гость видит только свои, персонал — ни одной
+    requests() { return this.d.waitlist.filter(w => w.req); },
+    addRequest(r) {
+      const n = Object.assign({ id: this.id(), ts: Date.now(), req: true, status: 'new' }, r);
+      this.d.waitlist.unshift(n);
+      this.notify('admin', `Заявка на бронь: ${n.name}, ${this.unit(n.unitId).short}, ${T.dm(n.start)} – ${T.dm(n.end)}. Подтвердите в шахматке`, 'calendar', 'chess');
+      this.save();
+      return n;
+    },
+    confirmRequest(id) {
+      const w = this.d.waitlist.find(x => x.id === id);
+      if (!w || w.status !== 'new') return { ok: false, msg: 'Заявка уже обработана' };
+      const r = this.addStay({ unitId: w.unitId, guest: w.name, login: w.login, phone: w.phone, guests: w.guests, start: w.start, end: w.end, source: 'Приложение', promo: w.promo, method: 'Не оплачено' });
+      if (!r.ok) return r;
+      w.status = 'ok'; w.bookingId = r.booking.id;
+      this.notify(w.login, `Даты подтверждены: ${this.unit(w.unitId).short}, ${T.dm(w.start)} – ${T.dm(w.end)}. Оплатите бронь во вкладке «Брони»`, 'check', 'g_book');
+      this.save();
+      return r;
+    },
+    rejectRequest(id) {
+      const w = this.d.waitlist.find(x => x.id === id);
+      if (!w || w.status !== 'new') return;
+      w.status = 'no';
+      this.notify(w.login, `К сожалению, ${this.unit(w.unitId).short} на ${T.dm(w.start)} – ${T.dm(w.end)} уже занят. Выберите другие даты или другой дом`, 'calendar', 'g_book');
+      this.save();
+    },
+    // Оплата подтверждённой брони (после заявки)
+    payStay(id, method) {
+      const b = this.d.bookings.find(x => x.id === id);
+      if (!b || b.paid) return;
+      const u = this.unit(b.unitId);
+      b.paid = true;
+      if (b.base > 0) this.addTx({ type: 'in', amount: b.base, cat: 'stay', title: `${b.guest}, ${u.short}`, method, bookingId: b.id }, true);
+      if (b.tax) this.addTx({ type: 'in', amount: b.tax, cat: 'tax', title: `Туристический налог, ${b.guest}`, method, bookingId: b.id }, true);
+      const g = this.user(b.login);
+      if (g && g.role === 'guest') g.bonus = (g.bonus || 0) + Math.round((b.base || 0) * this.S.bonusPct / 100);
+      this.notify('admin', `Оплачена бронь: ${b.guest}, ${u.short}, ${T.dm(b.start)} – ${T.dm(b.end)}, ${(b.amount || 0).toLocaleString('ru-RU')} ₽`, 'wallet', 'chess');
+      this.save();
     },
     addWait(w) { this.d.waitlist.unshift(Object.assign({ id: this.id(), ts: Date.now() }, w)); this.notify('admin', `Лист ожидания: ${w.name} ждёт ${this.unit(w.unitId).short} на ${T.dm(w.start)}`, 'calendar'); this.save(); },
     joinEvent(id, user, n) {

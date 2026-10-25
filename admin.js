@@ -93,18 +93,22 @@ function shiftDay(n) { S.hourDate = T.addDays(S.hourDate, n); render(); }
 
 function chessDay() {
   const d = DB.d, y = S.month.getFullYear(), m = S.month.getMonth(), n = new Date(y, m + 1, 0).getDate(), t = T.today();
-  const after = T.iso(new Date(y, m + 1, 1));
+  let clash = false;
   let h = '<table class="chess"><thead><tr><th class="cu">Дом</th>';
   for (let i = 1; i <= n; i++) { const dt = new Date(y, m, i), ds = T.iso(dt), we = dt.getDay() % 6 === 0; h += `<th class="${we ? 'we' : ''} ${ds === t ? 'tdy' : ''}"><b>${i}</b><i>${T.DOW[dt.getDay()]}</i></th>`; }
   h += '</tr></thead><tbody>';
   d.units.filter(u => u.mode === 'day').forEach(u => {
     h += `<tr><th class="cu">${esc(u.short)}</th>`;
+    const ub = d.bookings.filter(x => x.unitId === u.id && x.start), on = ds => ub.filter(x => x.start <= ds && ds < x.end);
     let i = 1;
     while (i <= n) {
-      const ds = T.iso(new Date(y, m, i));
-      const b = d.bookings.find(x => x.unitId === u.id && x.start && x.start <= ds && ds < x.end);
-      if (b) {
-        const last = b.end < after ? T.parse(b.end).getDate() - 1 : n, span = Math.max(1, last - i + 1);
+      const ds = T.iso(new Date(y, m, i)), bs = on(ds);
+      if (bs.length > 1) {   // две брони на одну ночь — овербукинг
+        clash = true;
+        h += `<td><button class="bk clash" aria-label="Овербукинг, ${i} число" onclick="clashSheet('${u.id}','${ds}')">!</button></td>`; i++;
+      } else if (bs.length === 1) {
+        const b = bs[0]; let span = 1;
+        while (i + span <= n) { const nx = on(T.iso(new Date(y, m, i + span))); if (nx.length === 1 && nx[0] === b) span++; else break; }
         h += `<td colspan="${span}"><button class="bk ${srcClass(b.source)}" onclick="bookingSheet(${b.id})">${esc(b.guest)}</button></td>`; i += span;
       } else { h += `<td class="${ds === t ? 'tdy' : ''}"><button class="free" aria-label="Свободно, ${i}" onclick="staySheet('${u.id}','${ds}')"></button></td>`; i++; }
     }
@@ -112,9 +116,9 @@ function chessDay() {
   });
   h += '</tbody></table>';
   const next = d.bookings.filter(b => b.start && !b.closed && b.end >= t).sort((a, b) => a.start < b.start ? -1 : 1).slice(0, 6);
-  return `<section class="card">
+  return reqCard() + `<section class="card">
     <div class="card-h"><div class="nav"><button class="iconbtn" aria-label="Предыдущий месяц" onclick="shiftMonth(-1)">${ic('left', 'sm')}</button><b>${T.MONTHS[m]} ${y}</b><button class="iconbtn" aria-label="Следующий месяц" onclick="shiftMonth(1)">${ic('right', 'sm')}</button></div></div>
-    <div class="keys"><span><i style="background:var(--c1)"></i>Прямая</span><span><i style="background:var(--c3)"></i>Яндекс</span><span><i style="background:var(--c4)"></i>Авито</span><span><i style="background:var(--c5)"></i>Сайт</span></div>
+    <div class="keys"><span><i style="background:var(--c1)"></i>Прямая</span><span><i style="background:var(--c3)"></i>Яндекс</span><span><i style="background:var(--c4)"></i>Авито</span><span><i style="background:var(--c5)"></i>Сайт, Островок</span>${clash ? '<span><i style="background:var(--bad)"></i>Овербукинг</span>' : ''}</div>
     <div class="scroller" id="chess-scroll">${h}</div></section>
   <div class="sec"><span class="h2">Заезды и проживающие</span></div>
   <section class="card flat"><div class="list">${next.length ? next.map(b => { const u = DB.unit(b.unitId); return `<button class="li" onclick="bookingSheet(${b.id})"><span class="thumb">${unitScene(u)}</span><span class="li-main"><span class="li-t">${esc(b.guest)}</span><br><span class="li-s">${esc(u.short)}, ${T.dm(b.start)} – ${T.dm(b.end)}, ${plural(b.guests || 2, 'гость', 'гостя', 'гостей')}</span></span><span class="li-end"><b>${b.start <= t ? 'живут' : T.rel(b.start)}</b></span></button>`; }).join('') : '<p class="empty">Броней пока нет. Нажмите на свободную клетку в шахматке.</p>'}</div></section>`;
@@ -202,22 +206,50 @@ function saveHour() {
   if (!r.ok) return toast(r.msg);
   S.hourDate = val('hb-date'); closeSheet(); render(); toast('Бронь создана');
 }
+// Заявки гостей из приложения: подтвердить, когда бронь поставлена в менеджер каналов
+function reqCard() {
+  const rs = DB.requests().filter(w => w.status === 'new');
+  if (!rs.length) return '';
+  return `<section class="card"><div class="card-h"><span class="h2">Заявки на бронь</span><span class="chip warn">${rs.length}</span></div>
+    <p class="small muted">Поставьте бронь в менеджере каналов на те же даты, чтобы они закрылись на площадках, и подтвердите заявку. Гостю придёт уведомление с оплатой.</p>
+    <div class="list">${rs.map(w => { const u = DB.unit(w.unitId), free = DB.dayFree(w.unitId, w.start, w.end); return `<div class="li" style="flex-direction:column;align-items:stretch;gap:10px">
+      <span class="li-main"><span class="li-t">${esc(w.name)} · ${esc(u.short)}</span><br><span class="li-s">${T.dm(w.start)} – ${T.dm(w.end)}, ${plural(w.guests || 2, 'гость', 'гостя', 'гостей')}${w.amount ? ', ' + money(w.amount) : ''}${w.phone ? ', ' + esc(w.phone) : ''}</span>
+      ${free ? '' : '<br><span class="small" style="color:var(--bad)">Эти даты уже заняты</span>'}</span>
+      <div class="btns"><button class="btn sm ghost" onclick="reqReject(${w.id})">Отклонить</button><button class="btn sm" ${free ? '' : 'disabled'} onclick="reqConfirm(${w.id})">Подтвердить</button></div></div>`; }).join('')}</div></section>`;
+}
+function reqConfirm(id) {
+  const r = DB.confirmRequest(id);
+  if (!r.ok) return toast(r.msg);
+  render();
+  ask('Бронь подтверждена', 'Если ещё не поставили её в менеджере каналов, сделайте это сейчас на те же даты: тогда они закроются на всех площадках, а приложение само свяжет брони.', 'Понятно', () => {});
+}
+function reqReject(id) { ask('Отклонить заявку?', 'Гостю придёт уведомление, что даты заняты.', 'Отклонить', () => { DB.rejectRequest(id); render(); toast('Заявка отклонена'); }, true); }
+function clashSheet(unitId, ds) {
+  const u = DB.unit(unitId), bs = DB.d.bookings.filter(b => b.unitId === unitId && b.start && b.start <= ds && ds < b.end);
+  sheet(sheetHead('Овербукинг', `${esc(u.short)}, ${T.dm(ds)}`) + `<div class="card"><p class="small">На одну ночь пришли ${plural(bs.length, 'бронь', 'брони', 'броней')}. Решите, кого переселить: предложите гостю другой дом или даты. Бронь с площадки отменяйте в менеджере каналов — отсюда она исчезнет сама.</p></div>
+    <section class="card flat"><div class="list">${bs.map(b => `<button class="li" onclick="bookingSheet(${b.id})"><span class="li-main"><span class="li-t">${esc(b.guest)}</span><br><span class="li-s">${T.dm(b.start)} – ${T.dm(b.end)}, ${esc(b.source || 'Прямая')}${b.amount ? ', ' + money(b.amount) : ''}</span></span>${ic('right', 'sm')}</button>`).join('')}</div></section>`);
+}
+
 function bookingSheet(id) {
   const b = DB.d.bookings.find(x => x.id === id); if (!b) return;
   const u = DB.unit(b.unitId);
   const when = b.start ? `${T.dm(b.start)} – ${T.dm(b.end)}, ${plural(T.nights(b.start, b.end), 'ночь', 'ночи', 'ночей')}` : `${T.rel(b.date)}, ${T.hm(b.from)}–${T.hm(b.to)}`;
   const rows = [['Объект', u.name], ['Когда', when], b.guests ? ['Гостей', b.guests] : null, ['Откуда', b.source || 'Прямая'], ['Сумма', money(b.amount)], b.tax ? ['В том числе налог', money(b.tax)] : null, b.start ? ['Код на дверь', DB.doorCode(b)] : null,
     b.start ? ['Онлайн-регистрация', b.checkin ? `пройдена, приедет к ${b.checkin.arrive}${b.checkin.car ? ', авто ' + b.checkin.car : ''}` : 'не пройдена'] : null, b.early ? ['Ранний заезд', 'с 10:00'] : null, b.late ? ['Поздний выезд', 'до 16:00'] : null,
-    b.group && b.group.members.length > 1 ? ['В компании', plural(b.group.members.length, 'человек', 'человека', 'человек')] : null].filter(Boolean);
+    b.group && b.group.members.length > 1 ? ['В компании', plural(b.group.members.length, 'человек', 'человека', 'человек')] : null,
+    b.ext ? ['Менеджер каналов', `бронь №${b.ext.id || '—'}${b.ext.lot ? ', лот ' + b.ext.lot : ''}`] : null].filter(Boolean);
   const folio = b.start ? DB.folio(b.id) : [];
   sheet(sheetHead(esc(b.guest), `Бронь №${b.id}`) + `
     <div class="card flat"><div class="list">${rows.map(([k, v]) => `<div class="li"><span class="li-main li-s">${k}</span><b>${esc(v)}</b></div>`).join('')}
     ${b.phone ? `<div class="li"><span class="li-main li-s">Телефон</span><a class="link" href="tel:${esc(b.phone.replace(/[^+\d]/g, ''))}">${esc(b.phone)}</a></div>` : ''}</div></div>
+    ${b.channel && !b.phone ? '<p class="small muted" style="padding:0 4px">Имя и телефон гостя смотрите в менеджере каналов: пока база на зарубежном сервере, контакты гостей с площадок сюда не передаются.</p>' : ''}
     ${folio.length ? `<button class="btn block" onclick="settleSheet(${b.id})">Общий счёт: ${money(sum(folio))}, принять оплату</button>` : ''}
     ${b.start ? `<div class="btns"><button class="btn ghost" onclick="toast('Новый код: '+DB.resetCode(${b.id}));bookingSheet(${b.id})">${ic('key', 'sm')} Сменить код</button><button class="btn ghost" onclick="incidentSheet(${b.id})">Ущерб</button></div>` : ''}
     <button class="btn block danger" onclick="cancelBooking(${b.id})">Отменить бронь</button>`);
 }
 function cancelBooking(id) {
+  const b = DB.d.bookings.find(x => x.id === id);
+  if (b && b.ext) return ask('Бронь пришла с площадки', 'Отмените её в менеджере каналов или на площадке: тогда она сама исчезнет отсюда, а даты откроются везде. Если удалить только здесь, на площадках даты останутся закрытыми.', 'Удалить здесь', () => { DB.cancelBooking(id); closeSheet(); render(); toast('Удалено из приложения'); }, true);
   ask('Отменить бронь?', 'Вместе с ней удалятся платёж в кассе и незакрытые задачи по этой брони.', 'Отменить бронь', () => { DB.cancelBooking(id); closeSheet(); render(); toast('Бронь отменена'); }, true);
 }
 
@@ -831,7 +863,8 @@ V.m_settings = () => {
     ${S.phStats ? `<span class="small muted">Фото в облаке: ${S.phStats.count} шт., ${(S.phStats.bytes / 1048576).toFixed(1)} МБ. Вся база занимает ${(S.phStats.db / 1048576).toFixed(0)} МБ из 500 МБ бесплатного тарифа.</span>` : ''}
     <div class="btns"><button class="btn sm ghost" onclick="SYNC.cycle(true).then(()=>{render();toast(SYNC.online?'Данные сверены с сервером':'Сервер не отвечает')})">Сверить сейчас</button><button class="btn sm ghost" onclick="passSheet()">${ic('lock', 'sm')} Мой пароль</button><button class="btn sm ghost" onclick="photoStats()">${ic('camera', 'sm')} Место под фото</button></div>` : ''}</section>
   <div class="sec"><span class="h2">Подключения</span></div>
-  <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => n === 'Онлайн-оплата' && SRV() ? `<button class="li" onclick="paymentsSheet()"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">Т-Банк, карты и СБП</span></span><span class="chip ${S.payReady ? 'ok' : 'plain'}">${S.payReady ? 'Подключено' : 'Не подключено'}</span></button>` : `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
+  <section class="card flat"><div class="list">${[['Telegram-бот', 'Уведомления и утренняя сводка'], ['Онлайн-оплата', 'СБП и карты через эквайринг'], ['Онлайн-касса 54-ФЗ', 'Чеки гостям автоматически'], ['Менеджер каналов', 'Яндекс Путешествия, Авито, Островок'], ['Электронные замки', 'Коды на дверь в день заезда'], ['GPS-трекеры', 'Квадроциклы на карте']].map(([n, s]) => n === 'Онлайн-оплата' && SRV() ? `<button class="li" onclick="paymentsSheet()"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">Т-Банк, карты и СБП</span></span><span class="chip ${S.payReady ? 'ok' : 'plain'}">${S.payReady ? 'Подключено' : 'Не подключено'}</span></button>` :
+      n === 'Менеджер каналов' ? `<button class="li" onclick="channelSheet()"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">RealtyCalendar: Авито, Яндекс, Островок, Ozon</span></span><span class="chip ${S.chReady ? 'ok' : 'plain'}">${S.chReady ? 'Подключено' : 'Настроить'}</span></button>` : `<div class="li"><span class="li-main"><span class="li-t">${n}</span><br><span class="li-s">${s}</span></span><span class="chip plain">Не подключено</span></div>`).join('')}</div></section>
   ${notifCard()}
   <div class="sec"><span class="h2">Оформление</span></div>${themeSeg()}
   <div class="btns"><button class="btn ghost" onclick="exportCSV()">${ic('download', 'sm')} Отчёт CSV</button>${SRV() ? '' : '<button class="btn ghost" onclick="resetDemo()">Сбросить демо</button>'}</div>`;
@@ -881,4 +914,74 @@ async function paymentsSheet() {
   S.payReady = r.ready;
   sheet(sheetHead('Онлайн-оплата', r.ready ? 'Подключено: Т-Банк' : 'Не подключено') + (r.ready ? '' : `<div class="card"><p class="small">Чтобы гости платили картой и по СБП, вставьте ключи терминала Т-Банка в Supabase (файл pay-keys.sql). Пока оплата в приложении демонстрационная.</p></div>`) +
     (r.payments.length ? `<section class="card flat"><div class="list">${r.payments.map(x => { const st = PAY_ST[x.status] || ['plain', x.status]; return `<div class="li"><span class="li-main"><span class="li-t">${esc(x.title)}</span><br><span class="li-s">${T.stamp(x.ts)}, ${esc(x.login)}${x.error ? ', ' + esc(x.error) : ''}</span></span><span style="text-align:right"><b>${money(x.amount)}</b><br><span class="chip ${st[0]}">${st[1]}</span></span></div>`; }).join('')}</div></section>` : '<p class="muted small">Онлайн-платежей пока не было.</p>'));
+}
+
+// --- Менеджер каналов: брони с Авито, Яндекса, Островка и Ozon сами попадают в шахматку (channels.sql и функция channels) ---
+const CH_ST = { applied: ['ok', 'Записана'], linked: ['ok', 'Связана с бронью из приложения'], cancelled: ['plain', 'Отмена'], skipped: ['plain', 'Пропущена'], unmapped: ['warn', 'Лот не привязан'], error: ['bad', 'Ошибка'], test: ['ok', 'Проверка связи'], new: ['plain', 'Новая'] };
+const chDefaultUrl = () => ((window.MU_CONFIG || {}).supabaseUrl || '').replace(/\/+$/, '') + '/functions/v1/channels';
+const chLink = () => (S.ch.url || chDefaultUrl()) + '?key=' + S.ch.key;
+async function channelSheet() {
+  if (!SRV()) return sheet(sheetHead('Менеджер каналов', 'Нужна общая база') + `<div class="card"><p class="small">Брони с площадок приходят на сервер, поэтому менеджер каналов подключается, когда приложение работает с общей базой.</p></div>` + chReqToggle());
+  sheet(sheetHead('Менеджер каналов', 'RealtyCalendar') + '<p class="muted small">Загружаем настройки…</p>');
+  const r = await SYNC.call('mu_channel_get', {});
+  if (!r.ok) { closeSheet(); return toast(/mu_channel_get|function|404/i.test(r.error || '') ? 'Сначала запустите channels.sql в Supabase' : r.error); }
+  chSet(r); renderChannel();
+}
+function chSet(r) { S.ch = r; S.chReady = r.total > 0 && Object.keys(r.units || {}).length > 0; }
+function chReqToggle() {
+  return `<section class="card"><span class="h2">Брони из приложения</span>
+    <label class="check"><input type="checkbox" ${DB.S.stayRequests ? 'checked' : ''} onchange="DB.S.stayRequests=this.checked;DB.save();toast(this.checked?'Гости будут отправлять заявки':'Гости снова бронируют сразу')"><span>Гость отправляет заявку, вы подтверждаете <span class="muted small">— так даты не продадут дважды, пока приложение не умеет само ставить брони в менеджер каналов</span></span></label></section>`;
+}
+function renderChannel() {
+  const c = S.ch, houses = DB.d.units.filter(u => u.mode === 'day'), ev = c.events || [];
+  const lotOf = id => Object.keys(c.units || {}).find(k => c.units[k] === id) || '';
+  sheet(sheetHead('Менеджер каналов', S.chReady ? 'Подключено: RealtyCalendar' : 'RealtyCalendar') + `
+    <section class="card"><span class="h2">1. Ссылка для RealtyCalendar</span>
+      <p class="small muted">В RealtyCalendar откройте Настройки → CRM-интеграции, вставьте ссылку в поле Webhooks и нажмите «Добавить WebHook». С этого момента каждая бронь, изменение и отмена с площадок придут сюда сами.</p>
+      <div class="code" id="ch-link">${esc(chLink())}</div>
+      <div class="btns"><button class="btn sm" onclick="copyText(document.getElementById('ch-link').textContent,'Ссылка скопирована')">${ic('copy', 'sm')} Скопировать</button><button class="btn sm ghost" onclick="chRotate()">Сменить ключ</button></div>
+      <details class="small muted"><summary>Адрес функции в Supabase</summary>${field('', `<input id="ch-url" class="inp" value="${esc(c.url || chDefaultUrl())}" placeholder="https://…supabase.co/functions/v1/channels">`)}Supabase → Edge Functions → channels, адрес вверху страницы. Обычно менять не нужно.</details></section>
+    <section class="card"><span class="h2">2. Какой дом — какой лот</span>
+      <p class="small muted">№ лота виден в RealtyCalendar: Календарь → нажмите на объект → «№ Лота».</p>
+      <div class="form">${houses.map(u => field(esc(u.name), `<input class="inp" data-lot="${esc(u.id)}" placeholder="№ лота" value="${esc(lotOf(u.id))}">`)).join('')}
+      <button class="btn block" onclick="chSave()">Сохранить</button></div></section>
+    ${chReqToggle()}
+    <section class="card"><span class="h2">3. Проверка связи</span><p class="small muted">Отправим проверочную бронь на эту ссылку так же, как это делает RealtyCalendar. Если всё настроено, придёт уведомление «Связь работает». Шахматка не изменится.</p>
+      <button class="btn sm ghost" id="ch-test" onclick="chTest()">Отправить проверочную бронь</button></section>
+    <div class="sec"><span class="h2">Что приходило</span></div>
+    ${ev.length ? `<section class="card flat"><div class="list">${ev.map(e => { const st = CH_ST[e.status] || ['plain', e.status], u = c.units && c.units[e.lot] ? DB.unit(c.units[e.lot]) : null;
+      return `<button class="li" onclick="chEvent(${e.id})"><span class="li-main"><span class="li-t">${e.kind === 'test' ? 'Проверка связи' : esc((e.source || 'Площадка') + ' · ' + (u ? u.short : 'лот ' + (e.lot || '?')))}</span><br><span class="li-s">${e.start ? T.dm(e.start) + ' – ' + T.dm(e.end) + ', ' : ''}${e.kind === 'cancel' ? 'отмена, ' : e.kind === 'change' ? 'изменение, ' : ''}${T.stamp(e.ts)}${e.note && e.status !== 'unmapped' ? ', ' + esc(e.note) : ''}</span></span><span class="chip ${st[0]}">${st[1]}</span></button>`; }).join('')}</div></section>`
+      : '<p class="muted small" style="padding:0 4px">Пока ничего не приходило. Вставьте ссылку в RealtyCalendar и отправьте проверочную бронь.</p>'}`);
+}
+async function chSave() {
+  const units = {}; let dup = false;
+  document.querySelectorAll('[data-lot]').forEach(el => { const k = el.value.trim(); if (!k) return; if (units[k]) dup = true; units[k] = el.dataset.lot; });
+  if (dup) return toast('Один и тот же лот указан у двух домов');
+  const r = await SYNC.call('mu_channel_set', { p_units: units, p_url: val('ch-url') });
+  if (!r.ok) return toast(r.error);
+  if (DB.S.stayRequests === undefined && Object.keys(units).length) { DB.S.stayRequests = true; DB.save(); }   // с менеджером каналов — заявки по умолчанию
+  chSet(r); renderChannel(); toast('Сохранено');
+}
+function chRotate() {
+  ask('Сменить ключ?', 'Старая ссылка перестанет работать. Новую нужно будет вставить в RealtyCalendar вместо старой.', 'Сменить', async () => {
+    const r = await SYNC.call('mu_channel_rotate', {}); if (!r.ok) return toast(r.error);
+    chSet(r); renderChannel(); toast('Ключ сменён. Вставьте новую ссылку в RealtyCalendar');
+  }, true);
+}
+async function chTest() {
+  const b = $('#ch-test'); if (b) { b.disabled = true; b.textContent = 'Отправляем…'; }
+  let ok = false, msg = '';
+  try {
+    const r = await fetch(chLink(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ test: true }) });
+    const j = await r.json().catch(() => ({}));
+    ok = r.ok && j.ok;
+    msg = j.error || (r.status === 401 ? 'Функция просит токен: выключите «Verify JWT» в её настройках' : r.status === 404 ? 'Функция channels не найдена: проверьте адрес' : 'Ответ сервера ' + r.status);
+  } catch (e) { msg = 'Функция не отвечает. Проверьте, что channels опубликована и у неё выключено «Verify JWT»'; }
+  const g = await SYNC.call('mu_channel_get', {}); if (g.ok) chSet(g);
+  renderChannel(); toast(ok ? 'Связь работает: проверочная бронь дошла' : msg);
+}
+function chEvent(id) {
+  const e = (S.ch.events || []).find(x => x.id === id); if (!e) return;
+  sheet(sheetHead('Что прислал менеджер каналов', T.stamp(e.ts)) + `<p class="small muted">Имена, телефоны и почта гостей вырезаны ещё до сохранения.</p>
+    <pre class="code" style="white-space:pre-wrap;max-height:50vh;overflow:auto">${esc(JSON.stringify(e.raw, null, 2) || '—')}</pre><button class="btn block ghost" onclick="renderChannel()">Назад</button>`);
 }
