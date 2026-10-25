@@ -23,7 +23,7 @@ create table if not exists mu.pay_config (
   api_url      text not null default 'https://securepay.tinkoff.ru/v2/',
   receipts     boolean not null default false,          -- включить, когда к терминалу подключена онлайн-касса
   taxation     text not null default 'usn_income',      -- система налогообложения ИП: osn, usn_income, usn_income_outcome, patent
-  tax          text not null default 'none',            -- НДС в чеке: none, vat0, vat10, vat20 …
+  tax          text not null default 'none',            -- НДС в чеке: none, vat0, vat5, vat7, vat10, vat22 (список банка на 2026 год)
   site_url     text not null default 'https://se3yaa.github.io/medvezhiy-ugol/',
   enabled      boolean not null default true
 );
@@ -203,8 +203,10 @@ begin
     if contact !~ '@' and regexp_replace(contact, '\D', '', 'g') !~ '^[78]?\d{10}$' then return mu.err('Для чека нужен телефон или почта'); end if;
     params := params || jsonb_build_object('Receipt', jsonb_build_object(
       'Taxation', cfg.taxation,
+      -- Признак расчёта по 54-ФЗ: предоплата 30% за будущее проживание — prepayment, остальное — полный расчёт
       'Items', jsonb_build_array(jsonb_build_object('Name', left(title, 128), 'Price', p_amount * 100, 'Quantity', 1,
-                                                    'Amount', p_amount * 100, 'Tax', cfg.tax, 'PaymentMethod', 'full_payment', 'PaymentObject', 'service')))
+                                                    'Amount', p_amount * 100, 'Tax', cfg.tax, 'PaymentObject', 'service',
+                                                    'PaymentMethod', case when title ~* '^предоплата' then 'prepayment' else 'full_payment' end)))
       || case when contact ~ '@' then jsonb_build_object('Email', contact)
               else jsonb_build_object('Phone', '+7' || right(regexp_replace(contact, '\D', '', 'g'), 10)) end);
   end if;
