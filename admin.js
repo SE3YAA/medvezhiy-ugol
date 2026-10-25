@@ -910,9 +910,11 @@ const PAY_ST = { CONFIRMED: ['ok', 'Оплачено'], NEW: ['plain', 'Созд
 async function paymentsSheet() {
   sheet(sheetHead('Онлайн-оплата', 'Т-Банк') + '<p class="muted small">Сверяем с банком…</p>');
   const r = await SYNC.call('mu_pay_list', {});
-  if (!r.ok) { closeSheet(); return toast(r.error); }
+  if (!r.ok) { closeSheet(); return toast(/mu_pay_list|function|404/i.test(r.error || '') ? 'Сначала запустите payments.sql в Supabase' : r.error); }
   S.payReady = r.ready;
   sheet(sheetHead('Онлайн-оплата', r.ready ? 'Подключено: Т-Банк' : 'Не подключено') + (r.ready ? '' : `<div class="card"><p class="small">Чтобы гости платили картой и по СБП, вставьте ключи терминала Т-Банка в Supabase (файл pay-keys.sql). Пока оплата в приложении демонстрационная.</p></div>`) +
+    `<section class="card"><span class="h2">Проверка</span><p class="small muted">Есть ли связь сервера с банком, какие ключи вставлены и куда банк присылает уведомления. Можно проверить ещё до получения ключей.</p>
+      <button class="btn sm ghost" id="pay-chk" onclick="payCheck()">Проверить связь с банком</button><div id="pay-check"></div></section>` +
     (r.payments.length ? `<section class="card flat"><div class="list">${r.payments.map(x => { const st = PAY_ST[x.status] || ['plain', x.status]; return `<div class="li"><span class="li-main"><span class="li-t">${esc(x.title)}</span><br><span class="li-s">${T.stamp(x.ts)}, ${esc(x.login)}${x.error ? ', ' + esc(x.error) : ''}</span></span><span style="text-align:right"><b>${money(x.amount)}</b><br><span class="chip ${st[0]}">${st[1]}</span></span></div>`; }).join('')}</div></section>` : '<p class="muted small">Онлайн-платежей пока не было.</p>'));
 }
 
@@ -984,4 +986,22 @@ function chEvent(id) {
   const e = (S.ch.events || []).find(x => x.id === id); if (!e) return;
   sheet(sheetHead('Что прислал менеджер каналов', T.stamp(e.ts)) + `<p class="small muted">Имена, телефоны и почта гостей вырезаны ещё до сохранения.</p>
     <pre class="code" style="white-space:pre-wrap;max-height:50vh;overflow:auto">${esc(JSON.stringify(e.raw, null, 2) || '—')}</pre><button class="btn block ghost" onclick="renderChannel()">Назад</button>`);
+}
+
+// Проверка онлайн-оплаты: связь сервера с банком, ключи, уведомления, чеки (mu_pay_check в payments.sql)
+async function payCheck() {
+  const b = $('#pay-chk'); if (b) { b.disabled = true; b.textContent = 'Проверяем…'; }
+  const r = await SYNC.call('mu_pay_check', {});
+  if (b) { b.disabled = false; b.textContent = 'Проверить ещё раз'; }
+  const box = $('#pay-check'); if (!box) return;
+  if (!r.ok) { box.innerHTML = `<p class="small" style="color:var(--bad)">${/mu_pay_check|function|404/i.test(r.error || '') ? 'Запустите обновлённый payments.sql в Supabase, тогда проверка заработает' : esc(r.error)}</p>`; return; }
+  const row = (k, v, c) => `<div class="li"><span class="li-main li-s">${k}</span><span class="chip ${c}">${esc(v)}</span></div>`;
+  box.innerHTML = `<div class="list">${[
+    row('Связь с банком', r.reached ? 'есть' : 'нет', r.reached ? 'ok' : 'bad'),
+    row('Ключи терминала', !r.keys ? 'не вставлены' : r.demo ? 'тестовый терминал' : 'боевой терминал', !r.keys ? 'plain' : r.demo ? 'warn' : 'ok'),
+    row('Оплата в приложении', r.keys && r.enabled ? 'включена' : 'демо-режим', r.keys && r.enabled ? 'ok' : 'plain'),
+    row('Уведомления от банка', r.notify ? 'настроены' : 'нет адреса', r.notify ? 'ok' : 'warn'),
+    row('Чеки 54-ФЗ', r.receipts ? 'включены' : 'выключены', r.receipts ? 'ok' : 'plain')].join('')}</div>
+    ${r.reached ? '' : `<p class="small" style="color:var(--bad)">Сервер не достучался до банка: ${esc(r.answer || '')}</p>`}
+    ${r.last ? `<p class="small muted">Последний платёж: ${esc(r.last.title)}, ${esc((PAY_ST[r.last.status] || [0, r.last.status])[1].toLowerCase())}, ${T.stamp(r.last.ts)}</p>` : ''}`;
 }

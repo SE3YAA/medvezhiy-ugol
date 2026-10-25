@@ -8,7 +8,10 @@
 --   3. Приложение спрашивает сервер о статусе, а сервер — банк (метод GetState).
 --      Только когда банк ответил CONFIRMED, приложение оформляет бронь или заказ.
 --   4. Гость больше не может записать в кассу оплату, которой не было: сервер проверяет номер платежа.
+--   5. Банк сам присылает уведомления о статусе (NotificationURL → функция tbank → mu_pay_notify): статус обновляется,
+--      даже если гость закрыл приложение, а управляющему приходит уведомление об оплате, отмене или возврате.
 -- Пароль терминала хранится только здесь, в закрытой таблице. Приложение его не видит.
+-- Файл можно запускать повторно (например, после обновления): ключи терминала и платежи сохраняются.
 
 create extension if not exists http with schema extensions;
 
@@ -26,6 +29,9 @@ create table if not exists mu.pay_config (
 );
 
 -- Платежи: по ним видно, что оплачено, и их нельзя использовать дважды
+-- Куда банк присылает уведомления: функция tbank в Supabase (supabase/functions/tbank/index.ts)
+alter table mu.pay_config add column if not exists notify_url text default 'https://xrzzbxnwijqberrrzuow.supabase.co/functions/v1/tbank';
+
 create table if not exists mu.payments (
   order_id   text primary key,
   property   text not null,
@@ -192,6 +198,7 @@ begin
   ord := p_property || '-' || encode(extensions.gen_random_bytes(8), 'hex');
   params := jsonb_build_object('Amount', p_amount * 100, 'OrderId', ord, 'Description', left(title, 140),
     'SuccessURL', cfg.site_url || '#payok', 'FailURL', cfg.site_url || '#payfail', 'PayType', 'O');
+  if coalesce(cfg.notify_url, '') ~ '^https://' then params := params || jsonb_build_object('NotificationURL', cfg.notify_url); end if;
   if cfg.receipts then
     if contact !~ '@' and regexp_replace(contact, '\D', '', 'g') !~ '^[78]?\d{10}$' then return mu.err('Для чека нужен телефон или почта'); end if;
     params := params || jsonb_build_object('Receipt', jsonb_build_object(
@@ -217,7 +224,7 @@ create or replace function mu.pay_refresh(p mu.payments) returns mu.payments
 language plpgsql as $$
 declare cfg mu.pay_config; res jsonb; out mu.payments;
 begin
-  if p.status in ('CONFIRMED', 'REJECTED', 'CANCELED', 'REFUNDED', 'PARTIAL_REFUNDED', 'DEADLINE_EXPIRED', 'ERROR') or p.payment_id is null then return p; end if;
+  if p.status in ('CONFIRMED', 'REJECTED', 'CANCELED', 'REVERSED', 'PARTIAL_REVERSED', 'REFUNDED', 'PARTIAL_REFUNDED', 'DEADLINE_EXPIRED', 'ERROR') or p.payment_id is null then return p; end if;
   select * into cfg from mu.pay_config where property = p.property;
   if not found then return p; end if;
   res := mu.tbank(cfg, 'GetState', jsonb_build_object('PaymentId', p.payment_id));
@@ -241,7 +248,7 @@ begin
   if not found then return mu.err('Платёж не найден'); end if;
   p := mu.pay_refresh(p);
   return jsonb_build_object('ok', true, 'order', p.order_id, 'status', p.status, 'paid', p.status = 'CONFIRMED',
-                            'failed', p.status in ('REJECTED', 'CANCELED', 'DEADLINE_EXPIRED', 'ERROR'), 'amount', p.amount);
+                            'failed', p.status in ('REJECTED', 'CANCELED', 'REVERSED', 'DEADLINE_EXPIRED', 'ERROR'), 'amount', p.amount);
 end $$;
 
 -- Управляющий: последние онлайн-платежи (незавершённые заодно сверяются с банком)
@@ -250,7 +257,7 @@ language plpgsql security definer set search_path = '' as $$
 declare p mu.payments;
 begin
   perform mu.need_admin(p_token, p_property);
-  for p in select * from mu.payments where property = p_property and status not in ('CONFIRMED', 'REJECTED', 'CANCELED', 'ERROR', 'DEADLINE_EXPIRED')
+  for p in select * from mu.payments where property = p_property and status not in ('CONFIRMED', 'REJECTED', 'CANCELED', 'REVERSED', 'PARTIAL_REVERSED', 'REFUNDED', 'PARTIAL_REFUNDED', 'ERROR', 'DEADLINE_EXPIRED')
            and payment_id is not null and created_at > now() - interval '3 days' order by created_at desc limit 10 loop
     perform mu.pay_refresh(p);
   end loop;
@@ -260,12 +267,90 @@ begin
                from (select * from mu.payments where property = p_property order by created_at desc limit 50) x), '[]'));
 end $$;
 
+-- ---------- Уведомления от банка ----------
+-- Банк присылает их на NotificationURL при каждой смене статуса. Функция tbank передаёт тело сюда как есть.
+-- Подпись проверяется паролем терминала, поэтому подделать уведомление нельзя. Ответ «OK» банк считает доставкой
+create or replace function mu.pay_note(p_property text, p_text text, p_icon text) returns void
+language plpgsql security definer set search_path = '' as $$
+declare nid bigint := floor(extract(epoch from clock_timestamp()) * 1000)::bigint * 1000 + floor(random() * 1000)::bigint;
+begin
+  insert into mu.records (property, coll, rid, data)
+  values (p_property, 'notes', nid::text, jsonb_build_object('id', nid, 'to', 'admin', 'text', p_text, 'icon', p_icon, 'go', 'cash',
+          'ts', floor(extract(epoch from clock_timestamp()) * 1000)::bigint, 'read', false));
+end $$;
+
+create or replace function public.mu_pay_notify(p_body jsonb) returns text
+language plpgsql security definer set search_path = '' as $$
+declare p mu.payments; cfg mu.pay_config; st text := p_body->>'Status'; old text; amt text;
+begin
+  if p_body is null or p_body->>'OrderId' is null or p_body->>'Token' is null then return 'ERROR: нет данных'; end if;
+  select * into p from mu.payments where order_id = p_body->>'OrderId' for update;
+  if not found then return 'OK'; end if;   -- не наш заказ (например, тест из кабинета банка): подтверждаем, чтобы банк не повторял
+  select * into cfg from mu.pay_config where property = p.property;
+  if not found or p_body->>'TerminalKey' is distinct from cfg.terminal_key
+     or lower(p_body->>'Token') <> mu.tb_token(p_body - 'Token', cfg.password) then
+    return 'ERROR: подпись не совпала';
+  end if;
+  old := p.status;
+  -- сумму сверяем с банком: подтверждённым считается только платёж на ту же сумму
+  if st = 'CONFIRMED' and coalesce((p_body->>'Amount')::bigint, p.amount * 100) <> p.amount * 100 then
+    update mu.payments set status = 'ERROR', error = 'Сумма в банке не совпала', payment_id = coalesce(payment_id, p_body->>'PaymentId'), updated_at = now()
+      where order_id = p.order_id;
+    perform mu.pay_note(p.property, format('Онлайн-оплата «%s»: сумма в банке не совпала с заказом. Проверьте в кабинете Т-Банка', p.title), 'alert');
+    return 'OK';
+  end if;
+  -- Промежуточные статусы не перетирают итоговые (уведомления могут прийти не по порядку)
+  if st is null or (old in ('CONFIRMED', 'REJECTED', 'REFUNDED', 'REVERSED', 'CANCELED', 'DEADLINE_EXPIRED')
+                    and st not in ('REFUNDED', 'PARTIAL_REFUNDED', 'REVERSED', 'PARTIAL_REVERSED', 'CANCELED')) then
+    return 'OK';
+  end if;
+  update mu.payments set status = st, payment_id = coalesce(payment_id, p_body->>'PaymentId'),
+         error = case when coalesce((p_body->>'Success')::boolean, true) then error else coalesce(p_body->>'Message', p_body->>'ErrorCode') end,
+         updated_at = now()
+    where order_id = p.order_id;
+  if st is distinct from old then
+    amt := btrim(to_char(p.amount, '999 999 999')) || ' ₽';
+    if st = 'CONFIRMED' then
+      perform mu.pay_note(p.property, format('Онлайн-оплата %s прошла: %s', amt, p.title), 'wallet');
+    elsif st in ('REFUNDED', 'PARTIAL_REFUNDED', 'REVERSED', 'PARTIAL_REVERSED') and old = 'CONFIRMED' then
+      perform mu.pay_note(p.property, format('Возврат по онлайн-оплате %s: %s. Если это бронь или заказ — отмените их в приложении', amt, p.title), 'alert');
+    end if;
+  end if;
+  return 'OK';
+end $$;
+
+-- Управляющий: связь Supabase с банком и состояние ключей (можно проверить ещё до получения ключей)
+create or replace function public.mu_pay_check(p_token text, p_property text) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare cfg mu.pay_config; r record; reached boolean := false; msg text; url text := 'https://securepay.tinkoff.ru/v2/'; has_cfg boolean;
+begin
+  perform mu.need_admin(p_token, p_property);
+  select * into cfg from mu.pay_config where property = p_property;
+  has_cfg := found;
+  if has_cfg then url := cfg.api_url; end if;
+  begin
+    perform extensions.http_set_curlopt('CURLOPT_TIMEOUT', '15');
+    -- Нарочно неверный запрос: банк отвечает ошибкой, и этого достаточно, чтобы понять, что связь есть
+    select * into r from extensions.http_post(url || 'GetState', '{"TerminalKey":"CHECK","PaymentId":"1","Token":"0"}', 'application/json');
+    reached := r.status between 200 and 499 and r.content like '{%';
+    msg := case when reached then coalesce(r.content::jsonb->>'Message', 'банк ответил') else 'ответ ' || r.status end;
+  exception when others then
+    msg := left(sqlerrm, 200);
+  end;
+  return jsonb_build_object('ok', true, 'reached', reached, 'answer', msg,
+    'keys', has_cfg, 'enabled', coalesce(cfg.enabled, false), 'demo', coalesce(cfg.terminal_key ~* 'demo$', false),
+    'receipts', coalesce(cfg.receipts, false), 'notify', cfg.notify_url,
+    'last', (select jsonb_build_object('status', status, 'title', title, 'ts', floor(extract(epoch from created_at) * 1000)::bigint)
+             from mu.payments where property = p_property order by created_at desc limit 1));
+end $$;
+
 do $$
 declare f text;
 begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     revoke all on all functions in schema mu from public, anon, authenticated;
-    foreach f in array array['mu_pay_ready(text)', 'mu_pay_init(text,text,int,text,text)', 'mu_pay_status(text,text,text)', 'mu_pay_list(text,text)'] loop
+    foreach f in array array['mu_pay_ready(text)', 'mu_pay_init(text,text,int,text,text)', 'mu_pay_status(text,text,text)', 'mu_pay_list(text,text)',
+                             'mu_pay_notify(jsonb)', 'mu_pay_check(text,text)'] loop
       execute format('revoke all on function public.%s from public', f);
       execute format('grant execute on function public.%s to anon, authenticated', f);
     end loop;
